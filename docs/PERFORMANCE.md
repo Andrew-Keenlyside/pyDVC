@@ -69,6 +69,22 @@ and (2), which are proportional to the box volume, not to the correlation
 work. The reference volume is re-read and re-differentiated for every point,
 even though neighbouring points share most of their box.
 
+**Measured (M0, 2026-09-25, [benchmarks](benchmarks/2026-09-25-M0-M1-case-S.md)).**
+On synthetic case S (256³ u16, 2 197 points, sphere 32 / 2 000 samples,
+`disp_max` 8, so `L = 52`; ccpi-dvc 22.0.0 on a 4-vCPU 2.1 GHz Xeon VM):
+
+| | model (terms 1–4 for S) | measured |
+|---|---|---|
+| per point, 12-DOF, 1 process | 4–15 ms (67–250 pt/s) | **26.7 ms (37.5 pt/s)** |
+| per point, 6-DOF, 1 process | slightly less | 22.9 ms (43.7 pt/s) |
+| OMP threads 1 → 4 | "terms 2–4 only" | **no gain** (37.5 → 36.3 pt/s) |
+| 4 processes on 4 cores | "2–3×" | 3.3× (123 pt/s, 12-DOF; 155 pt/s, 6-DOF) |
+
+CCPi is 2–7× slower per point than modelled here. Threads do not help, and
+12-DOF costs only 14 % more than 6-DOF, which confirms that fixed per-point
+overhead dominates. The case A rows above are still modelled: the example
+data could not be downloaded from this environment.
+
 At scenario B's scale, two further limits apply:
 
 * `DataCloud::sort_order_neighbors` sorts the whole cloud for every point:
@@ -174,7 +190,7 @@ above. As work per byte rises, the ratio moves toward factors 5×6 (~30–300×)
 
 | Milestone | Measurement | Replaces |
 |---|---|---|
-| M0 | CCPi `dvc` pt/s on cases A and S (synthetic), with a thread sweep and N concurrent processes | §3 table |
+| M0 | CCPi `dvc` pt/s on cases A and S (synthetic), with a thread sweep and N concurrent processes | §3 table. **Done for S** (§3, measured); A pending the data |
 | M2 | Fused-kernel pt/s and achieved TFLOP/s on the dev GPU; restructured-CPU pt/s (numba port of the same step) | §4.2 and factor 5 |
 | M3 | Single-GPU end-to-end, I/O wait fraction, bytes read vs `α` | §4.1, §4.3 A |
 | M4 | 1→8 GPU scaling on 2048³–4096³ synthetic cases on H100 | §4.3 B, factor 6 |

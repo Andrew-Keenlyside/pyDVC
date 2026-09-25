@@ -151,6 +151,14 @@ enough GOOD neighbours from the neighbours' median, and solves them again.
   but with an analytic Jacobian `∇g(x′)ᵀ ∂x′/∂p` and a batched Cholesky
   solve. `∂x′/∂p` follows CCPi's warp `x′ = c + t + (I + E)·R·d`
   ([`geometry/warp.py`](../src/pydvc/geometry/warp.py)).
+* **Exact normalisation derivative.** For ZSSD, NSSD and ZNSSD the normal
+  equations use the exact Jacobian of the normalised residual. Holding the
+  target mean and norm fixed within an iteration, the common shortcut, shifts
+  the fixed point by a term proportional to `(1 − ρ)·∂|g̃|/∂p`, which is not
+  zero under noise. CCPi differentiates the full objective numerically, so the
+  exact form is also the parity choice. It costs two more per-point sums
+  (`Σj`, `Σĝj`, ndof each) in the same pass
+  ([`kernels/objective.py`](../src/pydvc/kernels/objective.py)).
 * **IC-GN (M5).** Inverse compositional. The Hessian comes from the
   reference once per point, and each iteration needs target values only.
 * **Interpolation.** Separable Catmull-Rom, which equals CCPi's
@@ -209,7 +217,7 @@ GPUs for time series (§11).
 | Neighbour search | O(N²) full sort | KD-tree / GPU grid hash | millions of points in one run |
 | Sample template | a `FloatingCloud` per point (`std::mt19937` sphere) | one shared template per run | fits GPU constant/shared memory; statistically equivalent |
 | Tricubic | Lekien–Marsden + central-difference derivative kernels per box | separable Catmull-Rom from the raw brick | same interpolant (verified in M1), no per-voxel precompute |
-| Jacobian | forward differences, `h = 1e-10`, `ndof + 1` evaluations | analytic | 2.5–4× less work, no step-size sensitivity |
+| Jacobian | forward differences, `h = 1e-10`, `ndof + 1` evaluations | analytic, normalisation included | 2.5–4× less work, no step-size sensitivity |
 | Linear solve | column-pivoted QR of `JᵀJ` | batched Cholesky with a `SINGULAR` status | batched; ill-conditioning reported |
 | Precision | float64 | float32 with relative coordinates and compensated sums | GPU throughput; checked against a float64 reference |
 | Range failure | implicit: samples leave the interpolation box | explicit `‖u − seed‖∞ > disp_max`, plus brick validity | clearer semantics |

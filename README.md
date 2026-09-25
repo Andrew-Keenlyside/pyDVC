@@ -14,12 +14,14 @@ the [zarr-vectors](https://github.com/AllenInstitute/zarr-vectors-py/tree/gpu-ba
 format through its GPU backend.
 
 > [!NOTE]
-> **Status: design and scaffold only.** The package layout, interfaces and
-> plan are in place, but the modules are stubs that raise `NotImplementedError`
-> tagged with the milestone that delivers them. See
+> **Status: M0 and M1 done (CPU reference only).** Synthetic phantoms, the
+> CCPi baseline runner and the float64 numpy reference solver work, and they
+> are tested against analytic ground truth. GPU kernels (M2), the tiled
+> OME-Zarr / zarr-vectors pipeline (M3) and multi-GPU runs (M4) are still
+> stubs that raise `NotImplementedError` tagged with their milestone. See
 > [docs/MVP_PLAN.md](docs/MVP_PLAN.md) for the build order and
-> [docs/PERFORMANCE.md](docs/PERFORMANCE.md) for the expected speed-up, which
-> is a model and has not been measured yet.
+> [docs/benchmarks/](docs/benchmarks/) for measurements so far. The speed-up
+> in [docs/PERFORMANCE.md](docs/PERFORMANCE.md) is still mostly a model.
 
 ---
 
@@ -159,8 +161,18 @@ pyDVC/
 
 ## Planned usage
 
-The CLI surface is fixed now so the milestones build toward it. None of these
-commands work yet.
+The CLI surface is fixed now so the milestones build toward it. Working today
+(M0/M1): `synth`, `solve` (whole-volume numpy reference, one process) and
+`compare`:
+
+```bash
+pydvc synth --shape 256 256 256 --field affine --spacing 16 --out data/synth256   # case S
+pydvc solve data/synth256/config.yaml --disp                                     # -> runs .../results.npz, .disp, .stat
+pydvc compare data/synth256/run/results.npz data/synth256/truth.npz              # accuracy vs ground truth
+python -m pydvc.bench.ccpi_baseline data/synth256/config.yaml --workdir runs/ccpi_S   # CCPi dvc on the same case
+```
+
+The rest arrives with M2–M5:
 
 ```bash
 # 1. make a synthetic case with a known displacement field

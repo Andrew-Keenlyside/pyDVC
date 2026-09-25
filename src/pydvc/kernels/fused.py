@@ -17,9 +17,11 @@ Launch shape
 Per sample
     ``x' = c + t + F d``; Catmull-Rom value and gradient from the brick
     (converted from u8/u16 in registers); residual ``r``; Jacobian row
-    ``j = s * grad(g)^T dx'/dp`` (``s`` = objective scale); accumulate the
-    upper triangle of ``J^T J`` (21 floats for 6-DOF, 78 for 12-DOF), ``J^T r``
-    (6 or 12) and the objective sums.
+    ``j = grad(g)^T dx'/dp``; accumulate the upper triangle of ``J^T J`` (21
+    floats for 6-DOF, 78 for 12-DOF), ``J^T r`` (6 or 12) and the objective
+    sums. ZSSD/NSSD/ZNSSD also accumulate ``sum j`` and ``sum g^ j`` (ndof each),
+    from which the solve kernel forms the exact normal equations
+    (:func:`pydvc.kernels.objective.normal_equations`).
 
 ZNSSD / NSSD
     These need the target mean and norm before residuals exist. Pass 1
@@ -29,7 +31,7 @@ ZNSSD / NSSD
 
 Reduction and solve
     Warp-shuffle, then block reduction, gives one row per point:
-    ``[JtJ_upper, Jtr, obj, n_inside]``. A second small kernel runs one thread
+    ``[JtJ_upper, Jtr, sum_j, sum_gj, obj, n_inside]``. A second small kernel runs one thread
     per point: register Cholesky, step, convergence tests (CCPi: ``|d obj| <
     obj_tol`` or ``|d u| < disp_tol``), range test (``|u - seed| > disp_max``),
     and flags ``SINGULAR`` on a non-positive pivot.
@@ -65,7 +67,7 @@ class FusedGNStep:
         active: Any,             # (A,) int32 indices into the batch
         ref_values: Any,         # (B, M) reference samples (computed once per point)
         ref_stats: Any,          # (B, 2) reference mean / norm
-        out: Any,                # (B, ndof*(ndof+1)/2 + ndof + 2) normal equations + obj + n_inside
+        out: Any,                # (B, ndof*(ndof+1)/2 + 3*ndof + 2) normal-equation sums + obj + n_inside
     ) -> None:
         raise todo("M2", "FusedGNStep.__call__")
 

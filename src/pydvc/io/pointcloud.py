@@ -49,9 +49,27 @@ def read_roi(path: str | Path) -> tuple[np.ndarray, np.ndarray]:
     """Read a CCPi ``.roi`` or iDVC ``.txt``/``.csv`` point cloud.
 
     Returns ``(point_id (N,) int64, xyz (N, 3) float64)``. The first point is
-    CCPi's default start point.
+    CCPi's default start point. Lines are ``n x y z`` separated by tabs, spaces
+    or commas; blank lines, ``#`` comments and non-numeric header lines are skipped.
     """
-    raise todo("M1", "read_roi")
+    ids: list[int] = []
+    rows: list[tuple[float, float, float]] = []
+    for lineno, line in enumerate(Path(path).read_text().splitlines(), 1):
+        line = line.split("#", 1)[0].replace(",", " ").strip()
+        if not line:
+            continue
+        fields = line.split()
+        try:
+            values = [float(v) for v in fields[:4]]
+        except ValueError:
+            if ids:
+                raise ValueError(f"{path}:{lineno}: cannot parse {line!r}") from None
+            continue                                  # header line
+        if len(values) < 4:
+            raise ValueError(f"{path}:{lineno}: expected 'n x y z', got {line!r}")
+        ids.append(int(values[0]))
+        rows.append((values[1], values[2], values[3]))
+    return np.asarray(ids, dtype=np.int64), np.asarray(rows, dtype=np.float64).reshape(-1, 3)
 
 
 def write_pointcloud_store(

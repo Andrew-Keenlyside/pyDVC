@@ -67,6 +67,15 @@ about 8–11 weeks.**
 **Done when:** CCPi pt/s is measured for S and A, the thread-scaling curve is
 recorded, and PERFORMANCE.md §3 is updated with measured values.
 
+**Status (2026-09-25): done for S; case A blocked on data access.**
+[Measurements](benchmarks/2026-09-25-M0-M1-case-S.md). Phantoms, CCPi I/O and
+the baseline runner work, and CCPi pt/s and the thread/process scaling are
+measured on S, with PERFORMANCE.md §3 updated. `ccpi-dvc` 25.0.0 has a broken
+tricubic path, so the baselines use 22.0.0. Synthetic cases write their points
+as a CCPi `.roi` for now; the zarr-vectors store comes with M3. Case A (Zenodo) could not be
+downloaded from the development environment: its CCPi baseline and the
+reference `.disp` check are still to run.
+
 ### M1: numpy reference (2 weeks)
 
 | Task | Files |
@@ -88,6 +97,17 @@ recorded, and PERFORMANCE.md §3 is updated with measured values.
 * The analytic Jacobian matches finite differences within 1e-4 relative.
 * Q1 synthetic accuracy passes on S.
 * Q1 CCPi agreement passes on A. The numpy path runs A in minutes.
+
+**Status (2026-09-25): done except the case A checks.**
+All M1 files are implemented, plus an in-memory runner
+(`pipeline/inmemory.py`, `pydvc solve`) that drives the numpy path.
+Catmull-Rom matches Lekien–Marsden to 1.1e-12. The warp Jacobian matches
+finite differences. On S, Q1 synthetic passes: RMSE 0.0011 noise-free and 0.0103
+with 2 % noise, 100 % GOOD. pyDVC agrees with CCPi on S (median |Δu| 0.0016,
+100 % status agreement). The CCPi-agreement check and the "A in minutes" check
+on case A wait for the data. The licence is still undecided; M1 was written
+clean-room from the published method and black-box runs of `dvc`, without
+consulting CCPi source.
 
 ### M2: single-GPU kernels (2–3 weeks)
 
@@ -177,7 +197,7 @@ rather than failures.
 |---|---|---|---|
 | zarr-vectors gpu-backend API changes | high | medium | Pin the commit. Use only `api` and `building`. All access goes through `pydvc.io`. Report gaps upstream (bin assignment is internal). |
 | Catmull-Rom ≠ CCPi tricubic | low | medium | Tested in M1; fallback is the 64-weight Lekien stencil (same traffic, ~1.5–2× flop). |
-| The ZNSSD Jacobian approximation (fixed target stats per iteration) slows convergence | medium | low | Compare iteration histograms with CCPi; use the exact normalisation derivative if needed. |
+| ~~The ZNSSD Jacobian approximation (fixed target stats per iteration) slows convergence~~ | resolved in M1 | — | The exact normalisation derivative is used (two extra sums per point); see ARCHITECTURE §7. |
 | 12-DOF register pressure (78 + 12 accumulators) | medium | medium | Warp-cooperative accumulation; separate specialisation. |
 | Storage bandwidth below 10 GB/s | medium | medium (end-to-end only) | Stage to node NVMe, zstd with GPU decode, GDS. The kernel result (Q2) is unaffected. |
 | GPU zstd decode of image chunks not available through zarr-python | medium | low | Host decode into pinned memory with threads; measure before optimising. |

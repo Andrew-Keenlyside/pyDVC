@@ -18,11 +18,11 @@ and parameters alone and per-point sample coordinates are never stored.
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 
 import numpy as np
 
-from pydvc._todo import todo
 from pydvc.config import SubvolumeSpec
 
 
@@ -37,8 +37,43 @@ class Template:
 
     def extent(self) -> float:
         """Largest ``|offset|``. Rotations can bring any sample this far along any axis, so it sizes the halo."""
-        raise todo("M1", "Template.extent")
+        return float(np.sqrt((self.offsets.astype(np.float64) ** 2).sum(axis=1)).max())
+
+    def digest(self) -> str:
+        """Hash of the offsets, recorded with results so a resumed run cannot mix templates."""
+        return hashlib.sha256(np.ascontiguousarray(self.offsets).tobytes()).hexdigest()[:16]
+
+
+def cube_side(n_samples: int) -> int:
+    """Smallest ``k`` with ``k**3 >= n_samples`` (exact in integers; ``ceil(n ** (1/3))`` is not)."""
+    k = max(1, round(n_samples ** (1.0 / 3.0)))
+    while k**3 < n_samples:
+        k += 1
+    while k > 1 and (k - 1) ** 3 >= n_samples:
+        k -= 1
+    return k
 
 
 def make_template(spec: SubvolumeSpec) -> Template:
-    raise todo("M1", "make_template")
+    if spec.n_samples < 1:
+        raise ValueError("subvolume n_samples must be >= 1")
+    radius = 0.5 * spec.size * np.asarray(spec.aspect, dtype=np.float64)       # (x, y, z)
+    if spec.geometry == "cube":
+        k = cube_side(spec.n_samples)
+        axis = np.linspace(-1.0, 1.0, k) if k > 1 else np.zeros(1)
+        z, y, x = np.meshgrid(axis, axis, axis, indexing="ij")
+        offsets = np.stack([x.ravel(), y.ravel(), z.ravel()], axis=1) * radius
+    elif spec.geometry == "sphere":
+        rng = np.random.Generator(np.random.MT19937(spec.seed))
+        accepted: list[np.ndarray] = []
+        n = 0
+        while n < spec.n_samples:
+            # the unit ball fills pi/6 of its bounding cube
+            cand = rng.uniform(-1.0, 1.0, size=(2 * (spec.n_samples - n) + 64, 3))
+            cand = cand[(cand**2).sum(axis=1) <= 1.0]
+            accepted.append(cand)
+            n += len(cand)
+        offsets = np.concatenate(accepted)[: spec.n_samples] * radius
+    else:
+        raise ValueError(f"unknown subvolume geometry {spec.geometry!r}")
+    return Template(offsets=offsets.astype(np.float32), spec=spec)
