@@ -1,0 +1,36 @@
+# Production-style run: 4096^3 u16 pair (~275 GB), ~8.4 M points at 16-voxel
+# spacing inside a mask, one 8x H100 node. This is scenario B in docs/PERFORMANCE.md.
+volumes:
+  reference: /lustre/project/scan/t00.ome.zarr
+  deformed: /lustre/project/scan/t01.ome.zarr
+  array_path: "0"
+points: /lustre/project/dvc/points_s16.zarrvectors      # chunk_shape 256^3 voxels; tiles are 4^3 chunks
+output: /lustre/project/dvc/t00_t01.zarrvectors
+workdir: /lustre/project/dvc/runs/t00_t01
+
+subvolume:
+  geometry: sphere
+  size: 48
+  n_samples: 4096
+
+search:
+  dof: 6
+  objective: znssd
+  interpolation: tricubic
+  disp_max: 10                 # after rigid pre-alignment
+  rigid_trans: [0.0, 0.0, 0.0]
+  basin_radius: 0.0
+  method: fagn
+
+seeding:
+  strategy: coarse             # solve every 4th lattice point first, interpolate seeds, tiles independent
+  coarse_stride: 4
+  coarse_level: 1              # on the 2x-downsampled pyramid level: ~34 GB instead of 275 GB
+  repair_passes: 1
+
+cluster:
+  tile_shape: [1024, 1024, 1024]
+  gpu_memory_fraction: 0.8
+  prefetch_depth: 2
+  brick_dtype: native
+  scheduler: dynamic

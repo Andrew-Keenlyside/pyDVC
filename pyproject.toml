@@ -1,0 +1,56 @@
+[build-system]
+requires = ["hatchling>=1.24"]
+build-backend = "hatchling.build"
+
+[project]
+name = "pydvc"
+version = "0.0.1.dev0"
+description = "GPU-based Digital Volume Correlation for very large tomography datasets"
+readme = "README.md"
+# zarr v3 (required by zarr-vectors) needs Python >= 3.11.
+requires-python = ">=3.11"
+authors = [{ name = "Andrew Keenlyside" }]
+classifiers = [
+    "Development Status :: 1 - Planning",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Image Processing",
+]
+dependencies = [
+    "numpy>=1.24",
+    "scipy>=1.11",          # cKDTree for kNN on the host
+    "pyyaml>=6",
+    "zarr>=3.0",
+    # gpu-backend is under active development: pin the commit, bump deliberately.
+    "zarr-vectors @ git+https://github.com/AllenInstitute/zarr-vectors-py.git@06a3bc8a08afefc02cd1ffb265d67a03df798b87",
+]
+
+[project.optional-dependencies]
+gpu = [
+    "cupy-cuda12x>=13; sys_platform == 'linux'",
+    "zarr-vectors[gpu-codecs] @ git+https://github.com/AllenInstitute/zarr-vectors-py.git@06a3bc8a08afefc02cd1ffb265d67a03df798b87",
+]
+gpu-io = [
+    "zarr-vectors[gpu-io] @ git+https://github.com/AllenInstitute/zarr-vectors-py.git@06a3bc8a08afefc02cd1ffb265d67a03df798b87",
+]
+cpu-fast = ["numba>=0.59"]   # restructured-CPU baseline (kernels/cpu_fused.py)
+mpi = ["mpi4py>=3.1"]
+tiff = ["tifffile>=2024.1"]
+test = ["pytest>=8"]
+
+[project.scripts]
+pydvc = "pydvc.cli:main"
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/pydvc"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-m 'not slow'"
+markers = [
+    "gpu: needs cupy and a CUDA device (skipped without them)",
+    "slow: large synthetic volumes; opt in with -m slow",
+]

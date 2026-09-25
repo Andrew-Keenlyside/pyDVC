@@ -1,0 +1,38 @@
+# Parity case: the iDVC example dataset with CCPi's own test settings
+# (DigitalVolumeCorrelation/dvc_test/dvc_input.txt), which ship with a reference
+# result (central_grid_results/completed_central_grid.disp, 4 680 points).
+#
+# Data: Zenodo 10.5281/zenodo.7363345, dataset_0.npy / dataset_1.npy, each
+# 1520 x 1257 x 1260 u8 (x, y, z). These are presumed to be CCPi's frame_000 /
+# frame_010 (same dimensions). M0 confirms this by reproducing the reference .disp.
+volumes:
+  reference: data/magma/dataset_0.npy
+  deformed: data/magma/dataset_1.npy
+  raw_shape_xyz: [1520, 1257, 1260]
+  raw_dtype: "|u1"
+points: data/magma/central_grid.roi          # imported to a zarr-vectors store by `pydvc plan`
+output: runs/magma/results.zarrvectors
+workdir: runs/magma
+
+subvolume:
+  geometry: sphere
+  size: 80
+  n_samples: 8000
+
+search:
+  dof: 6
+  objective: znssd
+  interpolation: tricubic
+  disp_max: 38
+  rigid_trans: [34.0, 4.0, 0.0]
+  basin_radius: 0.0
+  method: fagn
+  report_convg_fail: false                   # match CCPi's LM path
+
+seeding:
+  strategy: wavefront                        # CCPi order and neighbour averaging
+  n_neighbours: 75
+
+cluster:
+  tile_shape: [1260, 1257, 1520]             # one tile: the whole problem on one GPU
+  prefetch_depth: 1

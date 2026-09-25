@@ -1,0 +1,20 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+.pytest_cache/
+.ipynb_checkpoints/
+
+# run outputs and data (never commit volumes or stores)
+data/
+runs/
+*.zarr/
+*.zarrvectors/
+*.zv/
+*.raw
+*.npy
+*.disp
+*.stat

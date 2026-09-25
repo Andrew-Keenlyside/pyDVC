@@ -1,0 +1,30 @@
+# 256^3 u16 speckle with an affine field: the development case for M1-M3.
+# Fits a 12 GB workstation GPU. Generate with:
+#   pydvc synth --shape 256 256 256 --field affine --spacing 16 --out data/synth256
+volumes:
+  reference: data/synth256/ref.ome.zarr
+  deformed: data/synth256/def.ome.zarr
+points: data/synth256/points.zarrvectors
+output: runs/synth256/results.zarrvectors
+workdir: runs/synth256
+
+subvolume:
+  geometry: sphere
+  size: 32
+  n_samples: 2000
+
+search:
+  dof: 12
+  objective: znssd
+  interpolation: tricubic
+  disp_max: 8
+  rigid_trans: [0.0, 0.0, 0.0]
+  basin_radius: 0.0
+  method: fagn
+
+seeding:
+  strategy: wavefront
+
+cluster:
+  tile_shape: [256, 256, 256]
+  prefetch_depth: 1
