@@ -15,7 +15,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
-from pydvc._todo import todo
 
 Geometry = Literal["cube", "sphere"]
 Objective = Literal["sad", "ssd", "zssd", "nssd", "znssd"]
@@ -116,8 +115,10 @@ class RunConfig:
 
     @classmethod
     def from_ccpi(cls, path: str | Path) -> RunConfig:
-        """Build from a CCPi ``dvc_in`` file (see :mod:`pydvc.io.ccpi`)."""
-        raise todo("M4", "RunConfig.from_ccpi")
+        """Build from a CCPi ``dvc_in`` file (see :mod:`pydvc.io.ccpi`); relative paths resolve against its folder."""
+        from pydvc.io.ccpi import read_dvc_input, run_config_from_dvc_input
+
+        return run_config_from_dvc_input(read_dvc_input(path), base_dir=Path(path).parent)
 
     def to_yaml(self, path: str | Path) -> None:
         import yaml
@@ -150,6 +151,8 @@ def _plain(value: Any) -> Any:
         return {k: _plain(v) for k, v in value.items()}
     if isinstance(value, (list, tuple)):
         return [_plain(v) for v in value]
+    if hasattr(value, "item") and not isinstance(value, (str, bytes)):     # numpy scalars
+        return value.item()
     return value
 
 

@@ -50,12 +50,12 @@ from pydvc.kernels.xp import Device
 
 RESULT_ATTRIBUTES: dict[str, tuple[str, int | None]] = {
     "point_id": ("int64", 1),
-    "status": ("int8", 1),
     "objmin": ("float32", 1),
     "displacement": ("float32", 3),
     "params": ("float32", None),     # ncols = dof, fixed at allocate()
     "n_iter": ("uint8", 1),
     "seed": ("float32", 3),
+    "status": ("int8", 1),           # written last: a cell with a status is complete (see written_cells)
 }
 _ATTR = "pydvc_results"          # root attribute holding the run's layout (dof, grid, source points)
 
@@ -115,10 +115,20 @@ class ResultStore:
             write_cell(self._level, cell, xyz[lo:hi], attrs, np.asarray(tile.bin_offsets[i]))
 
     def written_cells(self) -> set[CellCoord]:
-        """Cells already on disk, used to resume after a crash or pre-emption."""
+        """Cells already on disk, used to resume after a crash or pre-emption.
+
+        A cell counts only if every result array holds it. ``write_tile``
+        writes ``status`` last, so a worker killed half-way through a cell
+        leaves a cell that does not count, and the resubmitted job rewrites it.
+        """
         from zarr_vectors import building as zb
 
-        return {tuple(int(v) for v in c) for c in zb.list_chunk_keys(self._level, "vertex_attributes/status")}
+        arrays = ["vertices"] + [f"vertex_attributes/{n}" for n in RESULT_ATTRIBUTES]
+        cells = None
+        for name in arrays:
+            keys = {tuple(int(v) for v in c) for c in zb.list_chunk_keys(self._level, name)}
+            cells = keys if cells is None else cells & keys
+        return cells or set()
 
     def read_neighbourhood(self, cell: CellCoord, *, halo: int = 1, device: Device = "cuda") -> dict[str, Any]:
         """A cell and its neighbours, in one ``zarr_vectors.building.read_neighbourhood`` prefetch."""

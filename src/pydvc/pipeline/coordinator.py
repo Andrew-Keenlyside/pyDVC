@@ -87,8 +87,11 @@ def _plan(cfg: RunConfig, *, backend: str) -> dict[str, Any]:
             f"tiles need {mem.in_flight_bytes + mem.batch_bytes:,} bytes of device memory with prefetch_depth "
             f"{cfg.cluster.prefetch_depth}; {mem.device_bytes:,} usable. Reduce cluster.tile_shape or prefetch_depth."
         )
+    from pydvc.pipeline.launch import node_info
+
     plan_path = Path(cfg.workdir) / "plan.json"
-    save_plan(plan_path, tiles, assign_lpt(tiles, 1), cfg, points_store=str(store.resolve()), memory=asdict(mem),
+    n_nodes = node_info().n_nodes
+    save_plan(plan_path, tiles, assign_lpt(tiles, n_nodes), cfg, points_store=str(store.resolve()), memory=asdict(mem),
               backend=backend)
     return {"tiles": len(tiles), "points": pc.n_points, "memory": asdict(mem), "plan": str(plan_path)}
 
@@ -153,6 +156,7 @@ def _seed_wavefront(cfg: RunConfig, backend: str) -> dict[str, Any]:
     """Parity mode: the whole problem shell by shell, written straight into the results store."""
     from pydvc.pipeline.inmemory import solve_in_memory
 
+    _require_whole_volumes_fit(cfg, "wavefront seeding")
     point_id, xyz = _all_points(cfg)
     res = solve_in_memory(cfg, point_id, xyz, strategy="wavefront", backend=backend)
     _write_results(cfg, res)
@@ -168,6 +172,7 @@ def _seed_coarse(cfg: RunConfig, backend: str) -> dict[str, Any]:
     from pydvc.pipeline.inmemory import solve_in_memory
     from pydvc.solver.seeding import coarse_subset, interpolate_seed_field
 
+    _require_whole_volumes_fit(cfg, "coarse seeding")
     point_id, xyz = _all_points(cfg)
     sub = coarse_subset(xyz, cfg.seeding.coarse_stride)
     res = solve_in_memory(cfg, point_id[sub], xyz[sub], strategy="wavefront", backend=backend)
@@ -177,6 +182,23 @@ def _seed_coarse(cfg: RunConfig, backend: str) -> dict[str, Any]:
     info = _plan(cfg, backend=backend)
     good = float((res.status == 0).mean()) if len(res.status) else 0.0
     return {"strategy": "coarse", "coarse_points": len(sub), "coarse_good": good, "seconds": res.seconds, **info}
+
+
+def _require_whole_volumes_fit(cfg: RunConfig, what: str) -> None:
+    """The wavefront and (MVP) coarse passes hold both whole volumes in host memory; fail early if they cannot."""
+    import os
+
+    from pydvc.io.volume import open_volume
+
+    v = open_volume(cfg.volumes, "reference")
+    need = 2 * int(np.prod(v.shape)) * v.dtype.itemsize
+    have = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_AVPHYS_PAGES")
+    if need > 0.8 * have:
+        raise MemoryError(
+            f"{what} holds both volumes in memory ({need / 1e9:.0f} GB; {have / 1e9:.0f} GB available). "
+            "Use seeding.strategy 'rigid' (fine for displacements within a few voxels of rigid_trans), or the "
+            "pyramid-level coarse pass (M5)."
+        )
 
 
 def _write_results(cfg: RunConfig, res: Any) -> None:
@@ -199,10 +221,22 @@ def _write_results(cfg: RunConfig, res: Any) -> None:
         })
 
 
-def run(cfg: RunConfig, *, backend: str | None = None, devices: tuple[int, ...] | None = None) -> list[Any]:
-    """Solve every unwritten tile. One process on the first device; multi-GPU launch is M4."""
-    from pydvc.pipeline.tiling import load_plan, plan_document
-    from pydvc.pipeline.worker import QueueSource, TileWorker
+def run(
+    cfg: RunConfig,
+    *,
+    backend: str | None = None,
+    devices: tuple[int, ...] | None = None,
+    cpu_workers: int = 1,
+) -> list[Any]:
+    """Solve this node's unwritten tiles: one process per GPU (or ``cpu_workers`` CPU processes).
+
+    Resubmitting after a time-out, a node failure or a killed worker solves
+    only the tiles still missing. Tiles that failed twice are listed in
+    ``failed_tiles.json``, tiles still incomplete in ``run_stats.json``.
+    """
+    from pydvc.io.results import ResultStore
+    from pydvc.pipeline.launch import launch_local, node_info, node_share
+    from pydvc.pipeline.tiling import load_plan
     from pydvc.solver.engines import default_backend
 
     backend = backend or default_backend()
@@ -210,22 +244,25 @@ def run(cfg: RunConfig, *, backend: str | None = None, devices: tuple[int, ...] 
     plan_path = workdir / "plan.json"
     if not plan_path.exists():
         raise FileNotFoundError(f"{plan_path}: run `pydvc plan` first")
-    tiles, _ = load_plan(plan_path)
-    doc = plan_document(plan_path)
-    device = (devices or cfg.cluster.devices or (0,))[0]
+    info = node_info()
     t0 = time.perf_counter()
-    source = QueueSource(tiles)
-    worker = TileWorker(cfg, device, backend=backend, points_store=doc["points_store"], seed_field_path=_seed_field(cfg))
-    stats = [worker.run(source)]
+    stats = launch_local(cfg, backend=backend, devices=devices, cpu_workers=cpu_workers)
     seconds = time.perf_counter() - t0
-    failed_path = workdir / "failed_tiles.json"
-    if source.failed:
-        failed_path.write_text(json.dumps({"failed": source.failed, "errors": stats[0].errors}, indent=1))
-        log.error("%d tiles failed twice; see %s", len(source.failed), failed_path)
+    tiles, _ = load_plan(plan_path)
+    mine = set(node_share(plan_path, info))
+    written = ResultStore(cfg.output).written_cells()
+    missing = [t.id for t in tiles if t.id in mine and not written.issuperset(t.cells)]
+    errors = [e for s in stats for e in s.errors]
+    suffix = f".node{info.node_rank}" if info.n_nodes > 1 else ""
+    failed_path = workdir / f"failed_tiles{suffix}.json"
+    if missing:
+        failed_path.write_text(json.dumps({"missing": missing, "errors": errors}, indent=1))
+        log.error("%d tiles are not written; see %s and resubmit", len(missing), failed_path)
     elif failed_path.exists():
         failed_path.unlink()
-    (workdir / "run_stats.json").write_text(json.dumps(
-        {"seconds": seconds, "backend": backend, "workers": [asdict(s) for s in stats]}, indent=1, default=str))
+    (workdir / f"run_stats{suffix}.json").write_text(json.dumps(
+        {"seconds": seconds, "backend": backend, "node": asdict(info), "missing_tiles": missing,
+         "workers": [asdict(s) for s in stats]}, indent=1, default=str))
     return stats
 
 

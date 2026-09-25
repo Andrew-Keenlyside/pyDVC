@@ -35,7 +35,6 @@ from pathlib import Path
 
 import numpy as np
 
-from pydvc._todo import todo
 from pydvc.config import RunConfig
 from pydvc.status import PointStatus
 
@@ -61,8 +60,74 @@ def read_dvc_input(path: str | Path) -> dict[str, str]:
     return params
 
 
-def run_config_from_dvc_input(params: dict[str, str]) -> RunConfig:
-    raise todo("M4", "run_config_from_dvc_input")
+def _floats(value: str, n: int) -> tuple[float, ...]:
+    parts = value.replace(",", " ").split()
+    if len(parts) != n:
+        raise ValueError(f"expected {n} numbers, got {value!r}")
+    return tuple(float(v) for v in parts)
+
+
+def run_config_from_dvc_input(params: dict[str, str], *, base_dir: str | Path = ".") -> RunConfig:
+    """The :class:`RunConfig` equivalent to a CCPi ``dvc_in`` (settings as :func:`read_dvc_input` returns them).
+
+    Relative paths are resolved against ``base_dir`` (the input file's
+    folder, as ``dvc`` resolves them against its working directory). The
+    output store and work directory are ``<output_filename>.zarrvectors`` and
+    ``<output_filename>_pydvc``. Search settings follow CCPi's behaviour:
+    wavefront (CCPi-order) seeding and no ``CONVG_FAIL`` reporting.
+    """
+    from pydvc.config import SearchSpec, SeedingSpec, SubvolumeSpec, ThresholdSpec, VolumeSpec
+
+    base = Path(base_dir)
+
+    def path(key: str) -> str:
+        p = Path(params[key])
+        return str(p if p.is_absolute() else base / p)
+
+    missing = [k for k in ("reference_filename", "correlate_filename", "point_cloud_filename", "output_filename",
+                           "vol_bit_depth", "vol_wide", "vol_high", "vol_tall", "subvol_geom", "subvol_size",
+                           "subvol_npts", "disp_max", "num_srch_dof", "obj_function", "interp_type") if k not in params]
+    if missing:
+        raise ValueError(f"dvc_in is missing required keys {missing}")
+    bits = int(params["vol_bit_depth"])
+    if bits not in (8, 16):
+        raise ValueError(f"vol_bit_depth must be 8 or 16, got {bits}")
+    endian = ">" if params.get("vol_endian", "little").lower() == "big" else "<"
+    threshold = None
+    if params.get("subvol_thresh", "off").lower() == "on":
+        threshold = ThresholdSpec(float(params["gray_thresh_min"]), float(params["gray_thresh_max"]),
+                                  float(params.get("min_vol_fract", 0.2)))
+    start = params.get("starting_point")
+    n_points = int(float(params.get("num_points_to_process", "0")))
+    output = path("output_filename")
+    return RunConfig(
+        volumes=VolumeSpec(
+            reference=path("reference_filename"),
+            deformed=path("correlate_filename"),
+            raw_shape_xyz=(int(params["vol_wide"]), int(params["vol_high"]), int(params["vol_tall"])),
+            raw_dtype="|u1" if bits == 8 else f"{endian}u2",
+            raw_header_bytes=int(params.get("vol_hdr_lngth", "0")),
+        ),
+        points=path("point_cloud_filename"),
+        output=output + ".zarrvectors",
+        workdir=output + "_pydvc",
+        subvolume=SubvolumeSpec(
+            geometry=params["subvol_geom"], size=float(params["subvol_size"]), n_samples=int(params["subvol_npts"]),
+            aspect=_floats(params["subvol_aspect"], 3) if "subvol_aspect" in params else (1.0, 1.0, 1.0),
+        ),
+        search=SearchSpec(
+            dof=int(params["num_srch_dof"]),
+            objective=params["obj_function"],
+            interpolation=params["interp_type"],
+            disp_max=float(params["disp_max"]),
+            rigid_trans=_floats(params["rigid_trans"], 3) if "rigid_trans" in params else (0.0, 0.0, 0.0),
+            basin_radius=float(params.get("basin_radius", "0")),
+            threshold=threshold,
+            report_convg_fail=False,
+        ),
+        seeding=SeedingSpec(strategy="wavefront", start_point=_floats(start, 3) if start else None),
+        num_points_to_process=n_points or None,
+    )
 
 
 def _num(v: float) -> str:

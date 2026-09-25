@@ -46,3 +46,16 @@ def test_halo():
     assert RunConfig.from_dict(data).halo() == pytest.approx(24 + 10 + 2)       # docs: h = 36 for scenario B
     data["subvolume"] = {"geometry": "cube", "size": 20}
     assert RunConfig.from_dict(data).halo() == pytest.approx(10 * 3 ** 0.5 + 12)
+
+
+def test_numpy_scalars_serialise(tmp_path):
+    import numpy as np
+
+    data = {"volumes": {"reference": "a", "deformed": "b"}, "points": "p", "output": "o",
+            "seeding": {"start_point": [1.0, 2.0, 3.0]}}
+    cfg = RunConfig.from_dict(data)
+    import dataclasses
+
+    cfg = dataclasses.replace(cfg, seeding=dataclasses.replace(cfg.seeding, start_point=tuple(np.float64([1, 2, 3]))))
+    cfg.to_yaml(tmp_path / "c.yaml")
+    assert RunConfig.from_yaml(tmp_path / "c.yaml").seeding.start_point == (1.0, 2.0, 3.0)

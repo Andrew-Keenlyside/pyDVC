@@ -76,7 +76,8 @@ def cells_per_tile(cfg: RunConfig, chunk_shape: tuple[float, float, float]) -> t
     """Cells per tile along (x, y, z); the tile shape must be a whole number of cells."""
     tile_xyz = cfg.cluster.tile_shape[::-1]
     ratio = [t / c for t, c in zip(tile_xyz, chunk_shape)]
-    if any(abs(r - round(r)) > 1e-9 or round(r) < 1 for r in ratio):
+    # within 1 %: tiles that cover a volume edge not divisible by the cell count (e.g. 1257 over 315-voxel cells)
+    if any(abs(r - round(r)) > 0.01 * r or round(r) < 1 for r in ratio):
         raise ValueError(f"tile_shape {cfg.cluster.tile_shape} (z, y, x) is not a multiple of the point-cloud chunk {chunk_shape} (x, y, z)")
     return tuple(int(round(r)) for r in ratio)
 

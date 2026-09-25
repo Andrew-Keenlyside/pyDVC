@@ -205,6 +205,41 @@ GPU run.
   1–3; 10 is the safe pass line.
 * PERFORMANCE.md is rewritten from measurements (Q5).
 
+**Status (2026-09-25): software done and tested on CPU; the 8×H100 measurements are outstanding.**
+[Case A measurements](benchmarks/2026-09-25-M4-case-A-twin.md).
+
+* **Done.**
+  * `pipeline/launch.py`: node and rank discovery from SLURM, torchrun or
+    Open MPI; one process per GPU (spawn) sharing a node-local queue of tile
+    ids; LPT shares per node. `pydvc run --devices` and `--cpu-workers`.
+  * Resume, requeue, `failed_tiles.json` and `run_stats.json`. A cell counts
+    as written only when every result array holds it.
+  * `RunConfig.from_ccpi` reads CCPi `dvc_in` files.
+  * Scripts: a fixed SLURM chain (it no longer calls the M5 `repair` stub),
+    `scripts/slurm/storage_baseline.sh` (fio plus pyDVC's own read path),
+    `scripts/slurm/case_L.sbatch` (generate, then Q2, Q3 and end to end), and
+    `python -m pydvc.bench.scaling` (1→N efficiency, read bandwidth).
+* **Kill criterion met (on CPU workers).** `kill -9` of one of two worker
+  processes mid-run: the node's run finishes the other tiles, and the
+  resubmitted job solves only the 4 missing tiles and writes a bit-identical
+  store (`tests/test_launch.py`).
+* **Case A vs iDVC.** On a synthetic twin of case A (identical geometry,
+  points and settings; the Zenodo data is unreachable from the development
+  environment), pyDVC's CPU engine on 4 cores takes 28.6 s (parity mode)
+  or 47.6 s (CLI end to end). CCPi as iDVC runs it takes 1 069 s on the same
+  cores: **22–37× faster, before any GPU**. Displacements agree with CCPi 22.0.0
+  to a median 0.010 voxel. Status agreement is 97.8 %: 104 edge points whose
+  subvolume leaves the image, which pyDVC flags and CCPi does not. The
+  real-data run is one command, `python -m pydvc.bench.case_a`.
+* **Outstanding (needs the hardware):** Q2 and Q3 on case L, the 4096³
+  end-to-end time, and the GPU numbers for case A. `sbatch
+  scripts/slurm/case_L.sbatch 2048 <dir>` runs the whole sequence. Multi-node
+  runs are implemented but untested (M5).
+* **Coarse seeding at 4096³ is refused.** The MVP's coarse pass holds whole
+  volumes in memory, so `configs/large_8xh100.yaml` now uses rigid seeds and
+  `seed` fails early with a clear message when volumes do not fit. The
+  pyramid-level coarse pass stays in M5.
+
 ### M5: after the MVP (6–8 weeks, prioritised by what M4 shows)
 
 IC-GN · FFT-CC seeding · repair pass · strain · coarse pass on pyramid level

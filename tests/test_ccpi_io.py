@@ -102,3 +102,45 @@ def test_stat_round_trip(tmp_path):
     cfg = RunConfig(volumes=VolumeSpec(reference="a", deformed="b"), points="p", output="o")
     ccpi.write_stat(tmp_path / "run.stat", cfg, ccpi.RunSummary(n_points=100, seconds=4.0, counts={0: 98, -1: 2}))
     assert ccpi.read_stat_throughput(tmp_path / "run.stat") == pytest.approx(25.0)
+
+
+def test_run_config_from_ccpi_input(tmp_path):
+    from pydvc.config import RunConfig
+
+    (tmp_path / "dvc_in.txt").write_text(
+        "reference_filename\tf0.raw\t### ref\ncorrelate_filename\tf1.raw\t###\npoint_cloud_filename\tgrid.roi\t###\n"
+        "output_filename\tout/run\t###\nvol_bit_depth\t16\t###\nvol_endian\tbig\t###\nvol_hdr_lngth\t8\t###\n"
+        "vol_wide\t10\t###\nvol_high\t20\t###\nvol_tall\t30\t###\nsubvol_geom\tcube\t###\nsubvol_size\t24\t###\n"
+        "subvol_npts\t1000\t###\nsubvol_thresh\ton\t###\ngray_thresh_min\t5\t###\ngray_thresh_max\t250\t###\n"
+        "min_vol_fract\t0.3\t###\ndisp_max\t12\t###\nnum_srch_dof\t12\t###\nobj_function\tzssd\t###\n"
+        "interp_type\ttrilinear\t###\nrigid_trans\t1.5 -2 0\t###\nbasin_radius\t2.0\t###\nsubvol_aspect\t1 1 2\t###\n"
+        "num_points_to_process\t0\t###\nstarting_point\t5 6 7\t###\n"
+    )
+    cfg = RunConfig.from_ccpi(tmp_path / "dvc_in.txt")
+    assert cfg.volumes.reference == str(tmp_path / "f0.raw") and cfg.points == str(tmp_path / "grid.roi")
+    assert cfg.volumes.raw_shape_xyz == (10, 20, 30) and cfg.volumes.raw_dtype == ">u2" and cfg.volumes.raw_header_bytes == 8
+    assert (cfg.subvolume.geometry, cfg.subvolume.size, cfg.subvolume.n_samples, cfg.subvolume.aspect) == ("cube", 24.0, 1000, (1.0, 1.0, 2.0))
+    s = cfg.search
+    assert (s.dof, s.objective, s.interpolation, s.disp_max, s.rigid_trans, s.basin_radius) == (12, "zssd", "trilinear", 12.0, (1.5, -2.0, 0.0), 2.0)
+    assert s.threshold.gray_min == 5.0 and s.threshold.min_fraction == 0.3 and not s.report_convg_fail
+    assert cfg.seeding.strategy == "wavefront" and cfg.seeding.start_point == (5.0, 6.0, 7.0)
+    assert cfg.num_points_to_process is None and cfg.output == str(tmp_path / "out" / "run.zarrvectors")
+    # and back: write_dvc_input of this config reproduces the settings
+    np.save(tmp_path / "v.npy", np.zeros((30, 20, 10), dtype="<u2"))
+    ccpi.write_roi(tmp_path / "grid.roi", np.array([1]), np.array([[5.0, 6.0, 7.0]]))
+    import dataclasses
+
+    from pydvc.config import VolumeSpec
+
+    c2 = dataclasses.replace(cfg, volumes=VolumeSpec(reference=str(tmp_path / "v.npy"), deformed=str(tmp_path / "v.npy")))
+    ccpi.write_dvc_input(c2, tmp_path / "again.txt", roi_path=tmp_path / "grid.roi", output_base=tmp_path / "o")
+    back = RunConfig.from_ccpi(tmp_path / "again.txt")
+    assert back.search == dataclasses.replace(s) and back.subvolume == cfg.subvolume
+
+
+def test_missing_required_key_is_reported(tmp_path):
+    (tmp_path / "dvc_in.txt").write_text("reference_filename\ta.raw\t###\n")
+    from pydvc.config import RunConfig
+
+    with pytest.raises(ValueError, match="missing required keys"):
+        RunConfig.from_ccpi(tmp_path / "dvc_in.txt")

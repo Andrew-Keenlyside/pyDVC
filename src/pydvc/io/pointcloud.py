@@ -32,7 +32,6 @@ metadata.
 
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -305,5 +304,9 @@ def is_store(path: str | Path) -> bool:
 
 
 def chunk_shape_for(tile_shape_zyx: tuple[int, int, int], per_tile: int = 4) -> tuple[float, float, float]:
-    """Default cell size: ``per_tile`` cells per tile edge (e.g. 256 for 1024^3 tiles)."""
-    return tuple(float(max(1, math.ceil(t / per_tile))) for t in tile_shape_zyx[::-1])
+    """Default cell size: ``per_tile`` cells per tile edge (e.g. 256 for 1024^3 tiles).
+
+    Divided exactly, so the tile is a whole number of cells even when its edge
+    is not a multiple of ``per_tile`` (cells are in voxel units and may be fractional).
+    """
+    return tuple(t / per_tile for t in tile_shape_zyx[::-1])

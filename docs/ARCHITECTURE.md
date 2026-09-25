@@ -192,6 +192,14 @@ enough GOOD neighbours from the neighbours' median, and solves them again.
 
 ## 8. GPU execution
 
+`pydvc run` starts one process per local GPU (spawn start method; each
+process picks its device before touching CUDA), all pulling tile ids from one
+`multiprocessing` manager queue: dynamic scheduling within the node. Nodes take
+their LPT share from `plan.json` by rank (`SLURM_NODEID`, torchrun's
+`GROUP_RANK`, or Open MPI's rank ÷ local size) and never talk to each other
+([`pipeline/launch.py`](../src/pydvc/pipeline/launch.py)). The CPU engines use
+the same launcher, with `--cpu-workers` processes splitting the cores.
+
 Each worker process runs three streams:
 
 | Stream | Work |
@@ -244,9 +252,17 @@ GPUs for time series (§11).
 ## 9. Fault tolerance
 
 * A tile is written only after it has been solved completely, and its cells
-  are written whole. A crash loses at most the tiles in flight.
-* `run` checks which cells already exist (`ResultStore.written_cells`) and skips those tiles.
-* A tile that raises is requeued once, then recorded in `workdir/failed_tiles.json`.
+  are written whole, with `status` last. A cell counts as written only when
+  every result array holds it (`ResultStore.written_cells`), so a worker
+  killed in the middle of a cell leaves nothing that looks finished.
+* `run` skips tiles whose cells are all written. A crash loses at most the
+  tiles a worker had taken: the one being solved and up to `prefetch_depth`
+  prefetched (measured: a `kill -9` of one of two workers left 4 of 8 tiles
+  for the resubmitted job, which then wrote a bit-identical store).
+* Worker processes share one node-local queue. When one dies (`kill -9`, OOM,
+  a GPU fault), the others keep draining the queue, and `run` lists the tiles
+  still missing in `run_stats.json` and `failed_tiles.json` for the resubmission.
+* A tile that raises is requeued once, then recorded as failed.
 * `plan.json` records the zarr-vectors commit, the template hash and the
   config, so a resumed run cannot silently mix settings.
 

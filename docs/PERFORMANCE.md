@@ -14,6 +14,12 @@
 | **A**: iDVC example / CCPi test case, 4 680 pts | 4–11 min, 1 workstation | 2–6 s, **1× H100**, bound by I/O | **~40–300×** |
 | **B**: 4096³ u16 pair, ~8.4 M pts | 36–117 h per process (and the cloud must be split into ~10³ runs) | 1–3 min, **8× H100**, bound by I/O | **~700–7 000×** vs 1 process;<br>~250–3 500× vs a CPU node running 4 processes |
 
+**Measured so far (CPU only, [case A twin](benchmarks/2026-09-25-M4-case-A-twin.md)).**
+On 4 vCPU, with the iDVC example's geometry, points and settings, CCPi as iDVC
+runs it takes 17.8 min. pyDVC's restructured CPU engine takes 29 s in parity
+mode and 48 s through the CLI, **22–37× faster before any GPU**. That is
+factors 1–4 of §5 alone. The GPU rows above are still modelled.
+
 **Where the gain comes from.** Most of it is *restructuring*, not the GPU.
 Compare against a CPU implementation restructured the same way (bricks,
 analytic Jacobian, batched points, all cores busy). The 8×H100 node's
@@ -73,17 +79,22 @@ even though neighbouring points share most of their box.
 On synthetic case S (256³ u16, 2 197 points, sphere 32 / 2 000 samples,
 `disp_max` 8, so `L = 52`; ccpi-dvc 22.0.0 on a 4-vCPU 2.1 GHz Xeon VM):
 
-| | model (terms 1–4 for S) | measured |
+| | model (terms 1–4) | measured |
 |---|---|---|
 | per point, 12-DOF, 1 process | 4–15 ms (67–250 pt/s) | **26.7 ms (37.5 pt/s)** |
 | per point, 6-DOF, 1 process | slightly less | 22.9 ms (43.7 pt/s) |
 | OMP threads 1 → 4 | "terms 2–4 only" | **no gain** (37.5 → 36.3 pt/s) |
 | 4 processes on 4 cores | "2–3×" | 3.3× (123 pt/s, 12-DOF; 155 pt/s, 6-DOF) |
+| case A twin (sphere 80, 8 000 samples, L = 160), 6-DOF, iDVC mode (1 process, 4 threads) | 45–150 ms (7–20 pt/s) | **228 ms (4.4 pt/s)**; 4 680 points in 17.8 min |
+| case A twin, 4 processes × 1 thread | — | 807 s (5.8 pt/s); one thread alone takes 680 ms per point |
 
-CCPi is 2–7× slower per point than modelled here. Threads do not help, and
-12-DOF costs only 14 % more than 6-DOF, which confirms that fixed per-point
-overhead dominates. The case A rows above are still modelled: the example
-data could not be downloaded from this environment.
+The case A rows come from a synthetic twin with the example's geometry, points
+and settings ([benchmarks](benchmarks/2026-09-25-M4-case-A-twin.md)), because
+the Zenodo data could not be downloaded in the development environment.
+CCPi is 2–7× slower per point than modelled for case S, and 1.5–5× for case A.
+For case S, threads do not help and 12-DOF costs only 14 % more than 6-DOF:
+fixed per-point overhead dominates. For case A's larger boxes, 4 threads give
+3× over one.
 
 At scenario B's scale, two further limits apply:
 

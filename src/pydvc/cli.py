@@ -66,7 +66,8 @@ def cmd_seed(args: argparse.Namespace) -> None:
 def cmd_run(args: argparse.Namespace) -> None:
     from pydvc.pipeline import coordinator
 
-    for st in coordinator.run(_cfg(args), backend=args.backend):
+    devices = tuple(args.devices) if args.devices else None
+    for st in coordinator.run(_cfg(args), backend=args.backend, devices=devices, cpu_workers=args.cpu_workers):
         busy = st.seconds_compute + st.seconds_io_wait
         wait = f"{100 * st.seconds_io_wait / busy:.1f} %" if busy else "n/a"
         print(f"device {st.device}: {st.tiles} tiles solved, {st.tiles_skipped} already written, {st.points} points, "
@@ -161,7 +162,7 @@ def build_parser() -> argparse.ArgumentParser:
     for name, func, help_ in [
         ("plan", cmd_plan, "tiles, bricks, memory check, result store allocation"),
         ("seed", cmd_seed, "seed field (coarse pass) or wavefront solve"),
-        ("run", cmd_run, "solve all tiles on this node's GPUs"),
+        ("run", cmd_run, "solve this node's tiles, one process per GPU"),
         ("repair", cmd_repair, "re-seed and re-solve failed points"),
     ]:
         s = sub.add_parser(name, help=help_)
@@ -169,6 +170,9 @@ def build_parser() -> argparse.ArgumentParser:
         if name != "repair":
             s.add_argument("--backend", choices=["fused", "cupy", "cpu", "numpy"], default=None,
                            help="compute engine (default: fused with a GPU, else cpu with numba, else numpy)")
+        if name == "run":
+            s.add_argument("--devices", type=int, nargs="+", help="GPU ordinals (default: every visible GPU)")
+            s.add_argument("--cpu-workers", type=int, default=1, help="CPU backends: worker processes sharing the cores")
         s.set_defaults(func=func)
 
     s = sub.add_parser("finalize", help="rebuild presence, write metadata and summaries")

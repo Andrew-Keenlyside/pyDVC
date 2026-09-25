@@ -14,16 +14,19 @@ the [zarr-vectors](https://github.com/AllenInstitute/zarr-vectors-py/tree/gpu-ba
 format through its GPU backend.
 
 > [!NOTE]
-> **Status: M0–M3 done; no GPU measurement yet.** Phantoms, the CCPi baseline
-> runner, the float64 numpy reference, the fused CUDA kernels, the numba CPU
-> engine, and the tiled pipeline all work. The pipeline covers zarr-vectors
-> point and result stores, OME-Zarr bricks, plan → seed → run → finalize, and
-> resume. The CUDA kernels were developed without a GPU. They are checked by
-> compiling every specialisation with NVRTC and by running the `.cu` source
-> in a host emulator against the numpy reference, but have not yet run on a
-> GPU. Multi-GPU launch (M4) is still a stub. See
-> [docs/MVP_PLAN.md](docs/MVP_PLAN.md) and [docs/benchmarks/](docs/benchmarks/).
-> The speed-up in [docs/PERFORMANCE.md](docs/PERFORMANCE.md) is still largely a model.
+> **Status: M0–M4 software done; no GPU measurement yet.** The whole
+> pipeline works on one node: phantoms, the CCPi baseline, the numpy
+> reference, the fused CUDA kernels, the numba CPU engine, zarr-vectors
+> stores, OME-Zarr bricks, and one process per GPU with resume. The CUDA
+> kernels were developed without a GPU. They are checked by compiling every
+> specialisation with NVRTC and by running the `.cu` source in a host emulator
+> against the numpy reference, but have not yet run on a GPU.
+> **First measured comparison:** on a synthetic twin of the iDVC example
+> (same geometry, points and settings), pyDVC's *CPU* engine on 4 cores is
+> 22–37× faster than CCPi as iDVC runs it
+> ([benchmarks](docs/benchmarks/2026-09-25-M4-case-A-twin.md)).
+> [docs/MVP_PLAN.md](docs/MVP_PLAN.md) lists what the 8×H100 session must
+> still measure.
 
 ---
 
@@ -124,7 +127,9 @@ pyDVC/
 │   ├── MVP_PLAN.md               milestones M0–M5, acceptance criteria, risks
 │   └── PERFORMANCE.md            cost model and speed-up estimate
 ├── scripts/slurm/
-│   └── pydvc_8xh100.sbatch       plan → seed → solve → finalize on a GPU node
+│   ├── pydvc_8xh100.sbatch       plan → seed → run → finalize on a GPU node
+│   ├── case_L.sbatch             synthesise case L, then Q2 / Q3 / end to end
+│   └── storage_baseline.sh       fio + pyDVC read-path bandwidth
 ├── src/pydvc/
 │   ├── config.py                 RunConfig (YAML / CCPi dvc_in import)
 │   ├── status.py                 PointStatus (CCPi-compatible codes)
@@ -160,14 +165,14 @@ pyDVC/
 │   │   └── inmemory.py           whole-volume single-process solve (reference, parity)
 │   ├── synth/phantoms.py         speckle volumes + known displacement fields
 │   ├── post/strain.py            strain from displacement (kNN least squares)
-│   └── bench/                    CCPi baseline runner, accuracy metrics, throughput
+│   └── bench/                    CCPi baseline + head-to-head (case A), accuracy, throughput, scaling
 └── tests/                        acceptance tests per milestone (unimplemented → skipped)
 ```
 
 ## Planned usage
 
 The CLI surface is fixed now so the milestones build toward it. Working today
-(M0–M3), on one process and one device (`--backend fused|cupy|cpu|numpy`,
+(M0–M4) on one node, with one process per GPU (`--backend fused|cupy|cpu|numpy`,
 default: `fused` with a GPU, else `cpu` with numba):
 
 ```bash
@@ -180,9 +185,16 @@ pydvc compare  data/synth256/results.zarrvectors data/synth256/truth.npz
 pydvc solve    data/synth256/config.yaml        # whole-volume in-memory solve (reference / parity)
 python -m pydvc.bench.ccpi_baseline data/synth256/config.yaml --workdir runs/ccpi_S
 python -m pydvc.bench.throughput --backend fused cpu --samples 2000 --dof 6 12
+
+# the iDVC example dataset (Zenodo 7363345): CCPi as iDVC runs it vs pyDVC, speed and agreement
+python -m pydvc.bench.case_a fetch --data data/magma
+python -m pydvc.bench.case_a run --data data/magma --out runs/case_A --ccpi-exe /path/to/ccpi-dvc-22.0.0/bin/dvc
+
+# one 8x H100 node: case L, storage baseline, Q2/Q3, end to end
+sbatch scripts/slurm/case_L.sbatch 2048 /scratch/pydvc/caseL2048
 ```
 
-The multi-GPU launch arrives with M4, repair and the CCPi drop-in with M5:
+Repair, the CCPi drop-in and tested multi-node runs arrive with M5:
 
 ```bash
 # 1. make a synthetic case with a known displacement field
