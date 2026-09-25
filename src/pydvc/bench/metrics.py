@@ -1,8 +1,7 @@
 """Accuracy metrics against ground truth and against CCPi output.
 
-Results can be read from the in-memory runner's ``results.npz``
-(:mod:`pydvc.pipeline.inmemory`) or a CCPi ``.disp``; the zarr-vectors results
-store is added with M3. Points are matched on ``point_id``. Errors are over
+Results can be read from a zarr-vectors results store, the in-memory runner's
+``results.npz`` (:mod:`pydvc.pipeline.inmemory`) or a CCPi ``.disp``. Points are matched on ``point_id``. Errors are over
 points that are GOOD in the results (and, against CCPi, GOOD in both).
 """
 
@@ -14,7 +13,6 @@ from typing import Any
 
 import numpy as np
 
-from pydvc._todo import todo
 from pydvc.status import PointStatus
 
 
@@ -62,7 +60,11 @@ def load_results(path: str | Path) -> dict[str, np.ndarray]:
             "objmin": d["objmin"],
             "displacement": np.stack([d["u"], d["v"], d["w"]], axis=1),
         }
-    raise todo("M3", f"reading results from {path.name} (zarr-vectors results store)")
+    from pydvc.io.results import ResultStore
+
+    r = ResultStore(path).read_all()
+    return {"point_id": r["point_id"], "xyz": r["xyz"].astype(np.float64), "status": r["status"],
+            "objmin": r["objmin"], "displacement": r["displacement"].astype(np.float64)}
 
 
 def _match(a_ids: np.ndarray, b_ids: np.ndarray) -> tuple[np.ndarray, np.ndarray]:

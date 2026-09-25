@@ -81,6 +81,7 @@ def sample(
     method: Method = "tricubic",
     with_grad: bool = False,
     valid_lo_hi: tuple[Any, Any] | None = None,
+    centres: Any = None,
 ) -> Samples:
     """Interpolate ``brick`` at ``positions`` (B, M, 3). numpy or cupy, following the inputs.
 
@@ -88,6 +89,11 @@ def sample(
     space, like :class:`pydvc.geometry.box.Box` but in ``(x, y, z)``) that holds
     real data. By default it is the whole brick. Samples whose stencil leaves it
     are marked ``inside = False``; their values are finite but meaningless.
+
+    With ``centres`` (B, 3), ``positions`` are offsets from them. Each centre is
+    split into an integer voxel and a fraction in float64, and only the small
+    part is added in the working precision, so float32 keeps ~1e-6 voxel
+    resolution at any coordinate (the GPU kernels do the same).
     """
     if method not in _STENCIL:
         raise ValueError(f"unknown interpolation {method!r}")
@@ -97,8 +103,15 @@ def sample(
     data = xp.ascontiguousarray(xp.asarray(brick))
     nz, ny, nx = data.shape
     dims = (nx, ny, nz)
-    origin = xp.asarray(origin_xyz, dtype=dtype)
-    local = pos.astype(dtype, copy=False) - origin
+    base_idx = None
+    if centres is None:
+        origin = xp.asarray(origin_xyz, dtype=dtype)
+        local = pos.astype(dtype, copy=False) - origin
+    else:
+        rel_c = xp.asarray(centres, dtype=xp.float64) - xp.asarray(origin_xyz, dtype=xp.float64)
+        base_c = xp.floor(rel_c)
+        base_idx = base_c.astype(xp.int64)[:, None, :]
+        local = (rel_c - base_c).astype(dtype)[:, None, :] + pos.astype(dtype, copy=False)
     if valid_lo_hi is None:
         lo, hi = (0, 0, 0), dims
     else:
@@ -113,6 +126,8 @@ def sample(
         base = xp.floor(local)
         frac = local - base
         idx = base.astype(xp.int64)
+    if base_idx is not None:
+        idx = idx + base_idx
 
     inside = xp.ones(pos.shape[:-1], dtype=bool)
     safe = []

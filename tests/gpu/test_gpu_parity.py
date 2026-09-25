@@ -43,3 +43,32 @@ def test_gpu_matches_numpy(backend, dof, kind):
     assert (status == expected.status).mean() >= 0.999
     good = expected.status == 0
     np.testing.assert_allclose(cp.asnumpy(got.displacement)[good], expected.displacement[good], atol=1e-3)
+
+
+def test_gpu_pipeline_matches_the_cpu_engine(tmp_path):
+    """M3 on a GPU: bricks read to the device, fused kernels, results store; parity with the CPU engine."""
+    import dataclasses
+
+    from pydvc.config import ClusterSpec, RunConfig, SeedingSpec
+    from pydvc.io.results import ResultStore
+    from pydvc.pipeline import coordinator
+    from pydvc.synth.phantoms import default_field, make_case
+
+    shape = (80, 80, 80)
+    config = make_case(tmp_path / "case", shape_zyx=shape, field=default_field("affine", shape), spacing=8.0,
+                       chunk=40, shard=80, subvolume=SubvolumeSpec(geometry="sphere", size=16, n_samples=500),
+                       search=SearchSpec(dof=12, disp_max=8.0))
+    base = RunConfig.from_yaml(config)
+    out = {}
+    for backend in ("cpu", "fused"):
+        cfg = dataclasses.replace(base, output=str(tmp_path / f"{backend}.zarrvectors"), workdir=str(tmp_path / backend),
+                                  cluster=ClusterSpec(tile_shape=(40, 40, 40)), seeding=SeedingSpec(strategy="rigid"))
+        coordinator.prepare(cfg, backend=backend)
+        stats = coordinator.run(cfg, backend=backend)
+        assert not stats[0].errors
+        r = ResultStore(cfg.output).read_all()
+        o = np.argsort(r["point_id"])
+        out[backend] = {k: v[o] for k, v in r.items()}
+    assert (out["cpu"]["status"] == out["fused"]["status"]).mean() >= 0.999
+    good = out["cpu"]["status"] == 0
+    np.testing.assert_allclose(out["fused"]["displacement"][good], out["cpu"]["displacement"][good], atol=1e-3)

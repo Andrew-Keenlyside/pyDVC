@@ -129,6 +129,26 @@ consulting CCPi source.
 * The restructured-CPU pt/s is recorded.
 * A single H100 measurement for Q2, if access allows. Otherwise it moves to M4.
 
+**Status (2026-09-25): implemented; the GPU measurements are outstanding.**
+[Measurements](benchmarks/2026-09-25-M2-M3-cpu.md). The development machine has
+no GPU, so the kernels were built and checked without one:
+
+* The cupy path, the fused CUDA kernels (`kernels/cuda/fused_gn.cu`: `gn_sums`,
+  `gn_solve`, `sample_values`), batched Cholesky, grid search, batching and
+  the micro-benchmark are implemented. So is the numba restructured-CPU
+  engine, which measured 443 pt/s at B-like settings on 4 cores.
+* **Parity** is checked on the host. NVRTC compiles all 177 specialisations.
+  A host emulator runs the `.cu` source against the numpy reference (≤ 3.3e-7
+  voxel, identical statuses). numba and the float32 array path are within
+  1e-6 / 1e-3 voxel.
+* **Design change:** one pass per iteration instead of two. The kernels
+  accumulate one row of normal-equation sums from which the exact normal
+  equations follow for every objective (`objective.normal_equations_from_sums`).
+* **Not done, needs a GPU:** fused-kernel pt/s and TFLOP/s, Nsight
+  bottleneck analysis, the Q2 H100 figure. `ptxas` reports 128 registers
+  (6-DOF) and 250 (12-DOF) for `gn_sums`, no spills. `pytest -m gpu` holds
+  the GPU parity tests for the first GPU session.
+
 ### M3: data path and single-GPU end-to-end (2 weeks)
 
 | Task | Files |
@@ -147,6 +167,25 @@ consulting CCPi source.
 * Bytes read are within 5 % of the `α` model.
 * Compute-stream I/O wait is ≤ 20 % (Q4).
 * The results store passes zarr-vectors validation and reads back through `zv.open(...).select(bbox=...)`.
+
+**Status (2026-09-25): implemented and measured on CPU; GPU measurements outstanding.**
+Stores follow zarr-vectors' three-phase pattern, with pyDVC assigning bins.
+The pipeline covers OME-Zarr bricks (host decode, pinned staging to the
+device), `convert_to_ome_zarr`, tiling and `plan.json`, the TileWorker (a
+prefetch thread and a writer thread), and the coordinator: prepare / seed
+(rigid, wavefront, simple coarse at full resolution) / run (one process) /
+finalize. Resume and failed-tile requeue, listed under M4, came along with the
+worker. On case M with the CPU engine (226 981 points, 8 tiles):
+
+* The tiled run reproduces the whole-volume solve bit for bit.
+* It reads exactly the planned brick bytes (5.04 GB; 0.81× the α formula,
+  whose full-tile assumption does not hold at the volume faces).
+* The store passes zarr-vectors validation with 0 errors / 0 warnings and
+  answers `select(bbox=...)` correctly.
+* Accuracy is 100 % GOOD with RMSE ≤ 0.0025 voxel.
+
+I/O wait was < 0.01 %, but only because CPU compute is slow; Q4 needs the
+GPU run.
 
 ### M4: 8×H100 (1–2 weeks). **MVP complete.**
 
@@ -198,7 +237,7 @@ rather than failures.
 | zarr-vectors gpu-backend API changes | high | medium | Pin the commit. Use only `api` and `building`. All access goes through `pydvc.io`. Report gaps upstream (bin assignment is internal). |
 | Catmull-Rom ≠ CCPi tricubic | low | medium | Tested in M1; fallback is the 64-weight Lekien stencil (same traffic, ~1.5–2× flop). |
 | ~~The ZNSSD Jacobian approximation (fixed target stats per iteration) slows convergence~~ | resolved in M1 | — | The exact normalisation derivative is used (two extra sums per point); see ARCHITECTURE §7. |
-| 12-DOF register pressure (78 + 12 accumulators) | medium | medium | Warp-cooperative accumulation; separate specialisation. |
+| 12-DOF register pressure (78 + 12 accumulators) | measured statically: 250 registers, 520 B stack, no spills (`ptxas`, sm_90) | medium | Nsight on the first GPU run; then warp-cooperative accumulation or splitting the sums across two passes. |
 | Storage bandwidth below 10 GB/s | medium | medium (end-to-end only) | Stage to node NVMe, zstd with GPU decode, GDS. The kernel result (Q2) is unaffected. |
 | GPU zstd decode of image chunks not available through zarr-python | medium | low | Host decode into pinned memory with threads; measure before optimising. |
 | Coarse seeds fail near discontinuities (cracks, slip bands) | medium | medium | Repair pass (M5); per-tile wavefront fallback; FFT seeding. |

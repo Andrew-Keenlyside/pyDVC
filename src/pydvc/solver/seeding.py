@@ -124,9 +124,26 @@ def seed_from_neighbours(
     return seeds
 
 
-def coarse_subset(xyz: np.ndarray, stride: int) -> np.ndarray:
-    """Indices of every ``stride``-th lattice point along each axis."""
-    raise todo("M5", "coarse_subset")
+def coarse_subset(xyz: np.ndarray, stride: int, *, spacing: float | None = None) -> np.ndarray:
+    """Indices of every ``stride``-th lattice point along each axis.
+
+    Space is cut into cubes of ``stride x spacing`` (``spacing`` defaults to the
+    median point spacing) and the point nearest each cube's lower corner is
+    kept. On a regular lattice that is exactly the points whose lattice index
+    is a multiple of ``stride`` on every axis; on irregular clouds it is an
+    even thinning. Indices come back sorted.
+    """
+    pts = np.asarray(xyz, dtype=np.float64)
+    if len(pts) == 0 or stride <= 1:
+        return np.arange(len(pts))
+    step = stride * (spacing or median_spacing(pts))
+    rel = (pts - pts.min(axis=0)) / step
+    cell = np.floor(rel + 1e-9).astype(np.int64)
+    corner_dist = np.linalg.norm(rel - cell, axis=1)
+    order = np.lexsort((corner_dist, cell[:, 2], cell[:, 1], cell[:, 0]))
+    keys = cell[order]
+    first = np.concatenate([[True], np.any(np.diff(keys, axis=0) != 0, axis=1)])
+    return np.sort(order[first])
 
 
 def interpolate_seed_field(
@@ -134,9 +151,31 @@ def interpolate_seed_field(
     coarse_disp: np.ndarray,
     coarse_status: np.ndarray,
     xyz: Any,
+    *,
+    k: int = 8,
+    fallback: tuple[float, float, float] = (0.0, 0.0, 0.0),
 ) -> Any:
-    """Seeds for ``xyz`` from the GOOD coarse points (kNN inverse-distance weighting)."""
-    raise todo("M5", "interpolate_seed_field")
+    """Seeds for ``xyz`` from the GOOD coarse points (kNN inverse-distance weighting).
+
+    A point that coincides with a GOOD coarse point takes its displacement
+    exactly. With no GOOD coarse point at all, every seed is ``fallback``.
+    """
+    from scipy.spatial import cKDTree
+
+    pts = np.asarray(xyz, dtype=np.float64).reshape(-1, 3)
+    good = np.asarray(coarse_status) == PointStatus.GOOD
+    src = np.asarray(coarse_xyz, dtype=np.float64)[good]
+    disp = np.asarray(coarse_disp, dtype=np.float64)[good]
+    if len(src) == 0:
+        return np.broadcast_to(np.asarray(fallback, dtype=np.float64), pts.shape).copy()
+    k = min(k, len(src))
+    dist, idx = cKDTree(src).query(pts, k=k)
+    dist, idx = dist.reshape(len(pts), k), idx.reshape(len(pts), k)
+    w = 1.0 / np.maximum(dist, 1e-12) ** 2
+    exact = dist[:, 0] < 1e-9
+    w[exact] = 0.0
+    w[exact, 0] = 1.0
+    return (w[..., None] * disp[idx]).sum(axis=1) / w.sum(axis=1, keepdims=True)
 
 
 def repair_candidates(

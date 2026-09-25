@@ -39,7 +39,6 @@ import numpy as np
 
 from pydvc.config import RunConfig
 from pydvc.io import ccpi
-from pydvc.io.pointcloud import read_roi
 
 
 @dataclass
@@ -109,7 +108,9 @@ def run_ccpi(
     workdir = Path(workdir).resolve()
     workdir.mkdir(parents=True, exist_ok=True)
     cfg = ccpi_ready_config(cfg, workdir)
-    point_id, xyz = read_roi(cfg.points)
+    from pydvc.pipeline.inmemory import load_points
+
+    point_id, xyz = load_points(cfg)
     sampled = False
     if max_points is not None and len(xyz) > max_points:
         rng = np.random.default_rng(seed)

@@ -14,14 +14,16 @@ the [zarr-vectors](https://github.com/AllenInstitute/zarr-vectors-py/tree/gpu-ba
 format through its GPU backend.
 
 > [!NOTE]
-> **Status: M0 and M1 done (CPU reference only).** Synthetic phantoms, the
-> CCPi baseline runner and the float64 numpy reference solver work, and they
-> are tested against analytic ground truth. GPU kernels (M2), the tiled
-> OME-Zarr / zarr-vectors pipeline (M3) and multi-GPU runs (M4) are still
-> stubs that raise `NotImplementedError` tagged with their milestone. See
-> [docs/MVP_PLAN.md](docs/MVP_PLAN.md) for the build order and
-> [docs/benchmarks/](docs/benchmarks/) for measurements so far. The speed-up
-> in [docs/PERFORMANCE.md](docs/PERFORMANCE.md) is still mostly a model.
+> **Status: M0–M3 done; no GPU measurement yet.** Phantoms, the CCPi baseline
+> runner, the float64 numpy reference, the fused CUDA kernels, the numba CPU
+> engine, and the tiled pipeline all work. The pipeline covers zarr-vectors
+> point and result stores, OME-Zarr bricks, plan → seed → run → finalize, and
+> resume. The CUDA kernels were developed without a GPU. They are checked by
+> compiling every specialisation with NVRTC and by running the `.cu` source
+> in a host emulator against the numpy reference, but have not yet run on a
+> GPU. Multi-GPU launch (M4) is still a stub. See
+> [docs/MVP_PLAN.md](docs/MVP_PLAN.md) and [docs/benchmarks/](docs/benchmarks/).
+> The speed-up in [docs/PERFORMANCE.md](docs/PERFORMANCE.md) is still largely a model.
 
 ---
 
@@ -140,11 +142,13 @@ pyDVC/
 │   ├── kernels/                  array-namespace (numpy | cupy) numerics
 │   │   ├── xp.py                 device dispatch
 │   │   ├── interpolate.py        batched nearest / trilinear / tricubic (+ gradient)
-│   │   ├── objective.py          batched SAD / SSD / ZSSD / NSSD / ZNSSD (+ residuals)
+│   │   ├── objective.py          batched SAD / SSD / ZSSD / NSSD / ZNSSD, one-pass normal-equation sums
 │   │   ├── fused.py              fused CUDA Gauss–Newton step (cupy.RawModule)
+│   │   ├── cuda/                 fused_gn.cu, and a host emulator that runs it without a GPU (tests)
 │   │   └── cpu_fused.py          same step on CPU cores (numba), for the restructured-CPU baseline
 │   ├── solver/
 │   │   ├── gauss_newton.py       batched FA-GN (CCPi parity) and IC-GN
+│   │   ├── engines.py            numpy / cupy / fused / cpu engines behind one GN loop
 │   │   ├── coarse.py             batched translation grid search; FFT-CC seeding
 │   │   └── seeding.py            kNN graph, wavefront shells, coarse-field seeds, repair
 │   ├── pipeline/
@@ -152,7 +156,8 @@ pyDVC/
 │   │   ├── batching.py           batch sizing and spatially coherent ordering
 │   │   ├── worker.py             per-GPU tile loop with prefetch double-buffering
 │   │   ├── launch.py             process-per-GPU launcher, SLURM / torchrun / MPI rank discovery
-│   │   └── coordinator.py        prepare / seed / repair / finalize
+│   │   ├── coordinator.py        prepare / seed / run / repair / finalize
+│   │   └── inmemory.py           whole-volume single-process solve (reference, parity)
 │   ├── synth/phantoms.py         speckle volumes + known displacement fields
 │   ├── post/strain.py            strain from displacement (kNN least squares)
 │   └── bench/                    CCPi baseline runner, accuracy metrics, throughput
@@ -162,17 +167,22 @@ pyDVC/
 ## Planned usage
 
 The CLI surface is fixed now so the milestones build toward it. Working today
-(M0/M1): `synth`, `solve` (whole-volume numpy reference, one process) and
-`compare`:
+(M0–M3), on one process and one device (`--backend fused|cupy|cpu|numpy`,
+default: `fused` with a GPU, else `cpu` with numba):
 
 ```bash
 pydvc synth --shape 256 256 256 --field affine --spacing 16 --out data/synth256   # case S
-pydvc solve data/synth256/config.yaml --disp                                     # -> runs .../results.npz, .disp, .stat
-pydvc compare data/synth256/run/results.npz data/synth256/truth.npz              # accuracy vs ground truth
-python -m pydvc.bench.ccpi_baseline data/synth256/config.yaml --workdir runs/ccpi_S   # CCPi dvc on the same case
+pydvc plan     data/synth256/config.yaml        # points store, tiles, bricks, memory check, results store
+pydvc seed     data/synth256/config.yaml        # wavefront / coarse / rigid
+pydvc run      data/synth256/config.yaml        # tile loop; skips tiles already written (resume)
+pydvc finalize data/synth256/config.yaml --disp
+pydvc compare  data/synth256/results.zarrvectors data/synth256/truth.npz
+pydvc solve    data/synth256/config.yaml        # whole-volume in-memory solve (reference / parity)
+python -m pydvc.bench.ccpi_baseline data/synth256/config.yaml --workdir runs/ccpi_S
+python -m pydvc.bench.throughput --backend fused cpu --samples 2000 --dof 6 12
 ```
 
-The rest arrives with M2–M5:
+The multi-GPU launch arrives with M4, repair and the CCPi drop-in with M5:
 
 ```bash
 # 1. make a synthetic case with a known displacement field
@@ -215,6 +225,7 @@ branch, since that branch is under active development.
 ```bash
 git clone <this repo> pyDVC && cd pyDVC
 pip install -e ".[gpu,test]"          # cupy + zarr-vectors GPU extras
+pip install -e ".[cpu-fast]"          # numba: the restructured-CPU engine (backend "cpu")
 pip install -e ".[gpu-io]"            # optional: kvikio / GPUDirect Storage
 pip install -e ".[mpi]"               # optional: mpi4py for multi-node
 ```

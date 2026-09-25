@@ -45,25 +45,33 @@ def cmd_synth(args: argparse.Namespace) -> None:
 def cmd_convert(args: argparse.Namespace) -> None:
     from pydvc.io.volume import convert_to_ome_zarr
 
-    convert_to_ome_zarr(args.src, args.dst, chunk=args.chunk, shard=args.shard)
+    convert_to_ome_zarr(
+        args.src, args.dst, chunk=args.chunk, shard=args.shard,
+        shape_xyz=tuple(args.shape_xyz) if args.shape_xyz else None, dtype=args.dtype, header_bytes=args.header,
+    )
 
 
 def cmd_plan(args: argparse.Namespace) -> None:
     from pydvc.pipeline import coordinator
 
-    coordinator.prepare(_cfg(args))
+    print(coordinator.prepare(_cfg(args), backend=args.backend))
 
 
 def cmd_seed(args: argparse.Namespace) -> None:
     from pydvc.pipeline import coordinator
 
-    coordinator.seed(_cfg(args))
+    print(coordinator.seed(_cfg(args), backend=args.backend))
 
 
 def cmd_run(args: argparse.Namespace) -> None:
     from pydvc.pipeline import coordinator
 
-    coordinator.run(_cfg(args))
+    for st in coordinator.run(_cfg(args), backend=args.backend):
+        busy = st.seconds_compute + st.seconds_io_wait
+        wait = f"{100 * st.seconds_io_wait / busy:.1f} %" if busy else "n/a"
+        print(f"device {st.device}: {st.tiles} tiles solved, {st.tiles_skipped} already written, {st.points} points, "
+              f"{st.bytes_read / 1e9:.2f} GB read, compute {st.seconds_compute:.1f} s, I/O wait {wait}, "
+              f"status counts {st.status_counts}, {len(st.errors)} errors")
 
 
 def cmd_repair(args: argparse.Namespace) -> None:
@@ -75,7 +83,7 @@ def cmd_repair(args: argparse.Namespace) -> None:
 def cmd_finalize(args: argparse.Namespace) -> None:
     from pydvc.pipeline import coordinator
 
-    coordinator.finalize(_cfg(args), export_disp=args.disp, pyramid=args.pyramid)
+    print(coordinator.finalize(_cfg(args), export_disp=args.disp, pyramid=args.pyramid))
 
 
 def cmd_solve(args: argparse.Namespace) -> None:
@@ -134,7 +142,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("solve", help="in-memory single-process solve (numpy reference; whole volumes in memory)")
     s.add_argument("config")
-    s.add_argument("--backend", choices=["numpy", "cupy", "fused"], default="numpy")
+    s.add_argument("--backend", choices=["numpy", "cupy", "fused", "cpu"], default="numpy")
     s.add_argument("--out", help="results .npz (default: <workdir>/results.npz)")
     s.add_argument("--disp", action="store_true", help="also write a CCPi .disp next to the results")
     s.add_argument("--quiet", action="store_true")
@@ -145,6 +153,9 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("dst")
     s.add_argument("--chunk", type=int, default=128)
     s.add_argument("--shard", type=int, default=1024)
+    s.add_argument("--shape-xyz", type=int, nargs=3, metavar=("X", "Y", "Z"), help=".raw only: volume size")
+    s.add_argument("--dtype", help=".raw only: numpy dtype, e.g. '<u2' or '|u1'")
+    s.add_argument("--header", type=int, default=0, help=".raw only: header bytes to skip")
     s.set_defaults(func=cmd_convert)
 
     for name, func, help_ in [
@@ -155,6 +166,9 @@ def build_parser() -> argparse.ArgumentParser:
     ]:
         s = sub.add_parser(name, help=help_)
         s.add_argument("config")
+        if name != "repair":
+            s.add_argument("--backend", choices=["fused", "cupy", "cpu", "numpy"], default=None,
+                           help="compute engine (default: fused with a GPU, else cpu with numba, else numpy)")
         s.set_defaults(func=func)
 
     s = sub.add_parser("finalize", help="rebuild presence, write metadata and summaries")

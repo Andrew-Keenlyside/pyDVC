@@ -50,6 +50,10 @@ packages = ["src/pydvc"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-m 'not slow'"
+filterwarnings = [
+    # zarr-vectors stores fragment metadata as variable-length bytes, which zarr flags as unstable
+    "ignore:The data type \\(VariableLengthBytes\\(\\)\\) does not have a Zarr V3 specification",
+]
 markers = [
     "gpu: needs cupy and a CUDA device (skipped without them)",
     "slow: large synthetic volumes; opt in with -m slow",

@@ -87,8 +87,46 @@ def test_displacement_beyond_disp_max_is_range_fail():
     assert (res.status == PointStatus.RANGE_FAIL).all()
 
 
-def test_gpu_backends_are_milestone_stubs():
-    ref = whole_brick(wave_field((16, 16, 16)))
-    template = make_template(SubvolumeSpec(geometry="sphere", size=4, n_samples=10))
-    with pytest.raises(NotImplementedError, match="M2"):
-        solve_batch(ref, ref, np.full((1, 3), 8.0), np.zeros((1, 3)), template, SearchSpec(), backend="cupy")
+@pytest.mark.parametrize("dof", [3, 6, 12])
+@pytest.mark.parametrize("kind", ["ssd", "zssd", "nssd", "znssd"])
+def test_float32_path_matches_the_float64_reference(dof, kind):
+    """``numpy32`` runs the cupy path's float32 arithmetic on the host (M2 parity criterion: 1e-3 voxel)."""
+    u = (0.6, -0.3, 0.2)
+    ref = whole_brick(wave_field(SHAPE).astype(np.float32))
+    deformed = whole_brick(wave_field(SHAPE, shift_xyz=u).astype(np.float32))
+    centres = np.random.default_rng(7).uniform(20.0, 44.0, size=(24, 3)) + 1000.0   # large coordinates on purpose
+    ref.box, deformed.box = (_shifted(b.box) for b in (ref, deformed))
+    ref.valid, deformed.valid = ref.box, deformed.box
+    template = make_template(SubvolumeSpec(geometry="sphere", size=16, n_samples=800))
+    search = SearchSpec(dof=dof, objective=kind, disp_max=3.0)
+    expected = solve_batch(ref, deformed, centres, np.zeros((24, 3)), template, search, backend="numpy")
+    got = solve_batch(ref, deformed, centres, np.zeros((24, 3)), template, search, backend="numpy32")
+    assert got.params.dtype == np.float32
+    assert (got.status == expected.status).mean() >= 0.999
+    good = expected.status == 0
+    assert good.all()
+    np.testing.assert_allclose(got.displacement[good], expected.displacement[good], atol=1e-3)
+
+
+def _shifted(box):
+    from pydvc.geometry.box import Box
+
+    return Box(tuple(v + 1000 for v in box.lo), tuple(v + 1000 for v in box.hi))
+
+
+def test_basin_search_recovers_a_displacement_far_from_the_seed():
+    from pydvc.geometry.box import Box
+    from pydvc.synth.phantoms import DisplacementField, speckle_field, warp_volume
+
+    u = np.array([6.4, -5.6, 4.8])                            # |u| = 9.7: beyond plain GN's capture range
+    f = speckle_field(Box((0, 0, 0), SHAPE))
+    ref = whole_brick(f)
+    deformed = whole_brick(warp_volume(f, DisplacementField("affine", {"translation": tuple(u)})))
+    template = make_template(SubvolumeSpec(geometry="sphere", size=20, n_samples=600))
+    no_basin = SearchSpec(dof=3, disp_max=10.0)
+    with_basin = SearchSpec(dof=3, disp_max=10.0, basin_radius=1.0)
+    far = solve_batch(ref, deformed, CENTRES, np.zeros((2, 3)), template, no_basin, backend="numpy")
+    res = solve_batch(ref, deformed, CENTRES, np.zeros((2, 3)), template, with_basin, backend="numpy")
+    assert not np.allclose(far.displacement, u, atol=0.05)
+    assert (res.status == PointStatus.GOOD).all()
+    np.testing.assert_allclose(res.displacement, np.broadcast_to(u, (2, 3)), atol=0.02)

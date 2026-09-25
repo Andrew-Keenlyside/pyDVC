@@ -51,3 +51,16 @@ def test_ome_zarr_round_trip_and_open_volume(tmp_path):
     np.testing.assert_array_equal(vol.read_brick(Box((1, 2, 3), (9, 8, 7)), device="cpu").data, VOL[1:9, 2:8, 3:7])
     write_raw(vol, tmp_path / "v.raw", slab=5)
     np.testing.assert_array_equal(np.fromfile(tmp_path / "v.raw", dtype="<u2").reshape(VOL.shape), VOL)
+
+
+def test_convert_to_ome_zarr_from_big_endian_raw_and_npy(tmp_path):
+    from pydvc.io.volume import convert_to_ome_zarr
+
+    VOL.astype(">u2").tofile(tmp_path / "v.raw")
+    np.save(tmp_path / "v.npy", VOL)
+    convert_to_ome_zarr(tmp_path / "v.raw", tmp_path / "a.ome.zarr", chunk=4, shard=8, shape_xyz=(8, 10, 12), dtype=">u2")
+    convert_to_ome_zarr(tmp_path / "v.npy", tmp_path / "b.ome.zarr", chunk=4, shard=8)
+    a, b = ZarrVolume(str(tmp_path / "a.ome.zarr")), ZarrVolume(str(tmp_path / "b.ome.zarr"))
+    np.testing.assert_array_equal(a.array[...], VOL)
+    np.testing.assert_array_equal(b.array[...], VOL)
+    assert a.dtype == np.uint16 and a.dtype.byteorder in ("=", "<", "|")

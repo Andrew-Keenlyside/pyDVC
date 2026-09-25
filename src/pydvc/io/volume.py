@@ -19,8 +19,10 @@ Sources
        codec pipeline supports it;
     3. host decode into pinned memory, then one host-to-device copy per brick
        on the worker's prefetch stream.
-    Until M3, only the host path exists: the brick is read and decoded on the
-    host and, for ``device="cuda"``, copied up in one transfer.
+    Implemented today: path 3. The brick is decoded on the host (zarr-python
+    reads the shards' chunks concurrently) into a pinned buffer and copied up
+    in one transfer on the caller's stream. Paths 1 and 2 are optimisations to
+    measure against it (docs/MVP_PLAN.md, risk "GPU zstd decode").
 ``RawVolume``
     CCPi/iDVC flat inputs (``.raw`` with header/endianness, ``.mhd``, ``.npy``)
     through ``numpy.memmap``. Used for development and the parity case. Large
@@ -41,7 +43,6 @@ from typing import Any, Literal, Protocol
 
 import numpy as np
 
-from pydvc._todo import todo
 from pydvc.config import VolumeSpec
 from pydvc.geometry.box import Box
 from pydvc.kernels.xp import Device, get_xp
@@ -72,7 +73,7 @@ class VolumeSource(Protocol):
     def read_brick(self, box: Box, *, device: Device = "cuda", stream: Any = None) -> Brick: ...
 
 
-def _read_brick(array: Any, shape: tuple[int, int, int], box: Box, device: Device) -> Brick:
+def _read_brick(array: Any, shape: tuple[int, int, int], box: Box, device: Device, stream: Any = None) -> Brick:
     """Read ``box`` from a (z, y, x) array-like, edge-padding whatever lies outside the volume."""
     valid = box.intersect(Box((0, 0, 0), shape))
     if valid is None:
@@ -81,8 +82,24 @@ def _read_brick(array: Any, shape: tuple[int, int, int], box: Box, device: Devic
     pad = [(v - b, bh - vh) for b, v, vh, bh in zip(box.lo, valid.lo, valid.hi, box.hi)]
     data = np.pad(part, pad, mode="edge") if any(p != (0, 0) for p in pad) else np.ascontiguousarray(part)
     if device == "cuda":
-        data = get_xp("cuda").asarray(data)
+        data = to_device(data, stream=stream)
     return Brick(data=data, box=box, valid=valid)
+
+
+def to_device(data: np.ndarray, *, stream: Any = None) -> Any:
+    """Host array -> device, staged through pinned memory so the copy is a single DMA on ``stream``."""
+    cp = get_xp("cuda")
+    import cupyx
+
+    pinned = cupyx.empty_pinned(data.shape, dtype=data.dtype)
+    pinned[...] = data
+    out = cp.empty(data.shape, dtype=data.dtype)
+    if stream is None:
+        out.set(pinned)
+    else:
+        out.set(pinned, stream=stream)
+        stream.synchronize()
+    return out
 
 
 class ZarrVolume:
@@ -98,7 +115,7 @@ class ZarrVolume:
         self.dtype = np.dtype(self.array.dtype)
 
     def read_brick(self, box: Box, *, device: Device = "cuda", stream: Any = None) -> Brick:
-        return _read_brick(self.array, self.shape, box, device)
+        return _read_brick(self.array, self.shape, box, device, stream)
 
 
 _MHD_TYPES = {
@@ -160,7 +177,7 @@ class RawVolume:
         self.dtype = np.dtype(array.dtype)
 
     def read_brick(self, box: Box, *, device: Device = "cuda", stream: Any = None) -> Brick:
-        return _read_brick(self.array, self.shape, box, device)
+        return _read_brick(self.array, self.shape, box, device, stream)
 
 
 def is_zarr_uri(uri: str | Path) -> bool:
@@ -248,9 +265,35 @@ def convert_to_ome_zarr(
     shard: int = 1024,
     codec: Literal["zstd", "none"] = "zstd",
     level: int = 3,
+    shape_xyz: tuple[int, int, int] | None = None,
+    dtype: str | None = None,
+    header_bytes: int = 0,
 ) -> None:
     """One-off conversion of raw/mhd/npy/tiff input to sharded OME-Zarr v3.
 
-    Streams slabs of ``shard`` slices so memory stays bounded for 100 GB+ inputs.
+    Streams slabs of ``shard`` slices so memory stays bounded for 100 GB+ inputs
+    (each slab is written as whole shards). ``.raw`` needs ``shape_xyz`` and
+    ``dtype``; ``.tif``/``.tiff`` stacks need ``tifffile`` (``pydvc[tiff]``).
     """
-    raise todo("M3", "convert_to_ome_zarr")
+    src = Path(src)
+    if src.suffix.lower() in (".tif", ".tiff"):
+        try:
+            import tifffile
+        except ImportError as exc:
+            raise ImportError("TIFF input needs tifffile: pip install 'pydvc[tiff]'") from exc
+        array = tifffile.memmap(src) if tifffile.TiffFile(src).is_uniform else tifffile.imread(src)
+        if array.ndim != 3:
+            raise ValueError(f"{src}: expected a 3-D stack, got shape {array.shape}")
+        source_shape, source_dtype = tuple(array.shape), np.dtype(array.dtype)
+    elif is_zarr_uri(src):
+        vol = ZarrVolume(str(src))
+        array, source_shape, source_dtype = vol.array, vol.shape, vol.dtype
+    else:
+        vol = RawVolume(src, shape_xyz=shape_xyz, dtype=dtype, header_bytes=header_bytes)
+        array, source_shape, source_dtype = vol.array, vol.shape, vol.dtype
+    out_dtype = source_dtype.newbyteorder("=") if source_dtype.byteorder not in ("=", "|") else source_dtype
+    out = create_ome_zarr(dst, source_shape, out_dtype, chunk=chunk, shard=shard, codec=codec, level=level)
+    slab = int(out.shards[0])
+    for z in range(0, source_shape[0], slab):
+        z1 = min(z + slab, source_shape[0])
+        out[z:z1] = np.asarray(array[z:z1]).astype(out_dtype, copy=False)

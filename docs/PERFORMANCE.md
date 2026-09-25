@@ -162,6 +162,14 @@ Multiplicative factors relative to CCPi as shipped, for scenario B:
 | 5 | H100 vs a 32-core CPU node for this kernel (practical 150–500 k pt/s per GPU vs 12–35 k pt/s per node; the CPU reaches ~0.2–0.6 TFLOP/s on the gathers) | **GPU only** | **~4–40× per GPU** |
 | 6 | 8 GPUs, independent tiles | **GPU only** | ~7–8× on compute; 1× on shared I/O |
 
+**Measured (M2, [benchmarks](benchmarks/2026-09-25-M2-M3-cpu.md)).** The
+restructured CPU backend as built, the fused step in numba on 4 vCPU,
+reaches 443 pt/s at scenario B's settings (M = 4 096, 6-DOF, sphere 48), about
+110 pt/s per core, and 6.8–7.4× CCPi's best on the same cores for case S.
+Scaled linearly to 32 cores that is about 3.5 k pt/s, **3–10× below the
+12–35 k assumed below**. Until a vectorised CPU kernel shows otherwise, the
+GPU-vs-restructured-CPU ratios in §1 are conservative.
+
 Factors 1–4 give the restructured CPU backend: about 12–35 k pt/s per node,
 so scenario B takes 4–12 min per node, still limited mainly by compute. The
 8×H100 node takes 1–3 min, limited by I/O. That ratio is the ~1.5–12× quoted
@@ -191,8 +199,8 @@ above. As work per byte rises, the ratio moves toward factors 5×6 (~30–300×)
 | Milestone | Measurement | Replaces |
 |---|---|---|
 | M0 | CCPi `dvc` pt/s on cases A and S (synthetic), with a thread sweep and N concurrent processes | §3 table. **Done for S** (§3, measured); A pending the data |
-| M2 | Fused-kernel pt/s and achieved TFLOP/s on the dev GPU; restructured-CPU pt/s (numba port of the same step) | §4.2 and factor 5 |
-| M3 | Single-GPU end-to-end, I/O wait fraction, bytes read vs `α` | §4.1, §4.3 A |
+| M2 | Fused-kernel pt/s and achieved TFLOP/s on the dev GPU; restructured-CPU pt/s (numba port of the same step) | §4.2 and factor 5. **Restructured-CPU pt/s done** (§5); GPU pending |
+| M3 | Single-GPU end-to-end, I/O wait fraction, bytes read vs `α` | §4.1, §4.3 A. **Bytes read done** (case M: exactly the planned bricks); GPU end-to-end and I/O wait pending |
 | M4 | 1→8 GPU scaling on 2048³–4096³ synthetic cases on H100 | §4.3 B, factor 6 |
 
 Dev-GPU numbers (for example from an RTX A2000 12 GB: 288 GB/s, ~8 TFLOP/s

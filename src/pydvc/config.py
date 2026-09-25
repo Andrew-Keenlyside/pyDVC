@@ -132,11 +132,18 @@ class RunConfig:
         """Brick margin around a tile's points, in voxels.
 
         The subvolume's farthest sample (half-diagonal for a cube, since 6/12-DOF
-        warps rotate it), plus ``disp_max``, plus the 2-voxel cubic stencil, plus
-        the spread of seeds within the tile (added at plan time).
+        warps rotate it), plus ``disp_max``, plus the 2-voxel cubic stencil. The
+        spread of seeds within a tile is added at plan time.
         """
-        raise todo("M3", "RunConfig.halo")
+        import math
 
+        half = 0.5 * self.subvolume.size
+        aspect = self.subvolume.aspect
+        if self.subvolume.geometry == "cube":
+            extent = half * math.sqrt(sum(a * a for a in aspect))
+        else:
+            extent = half * max(aspect)
+        return extent + self.search.disp_max + 2.0
 
 def _plain(value: Any) -> Any:
     if isinstance(value, dict):

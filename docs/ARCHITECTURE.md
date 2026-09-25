@@ -91,7 +91,8 @@ reads level 1. Bricks stay in their native dtype on the device. The read path
 is kvikio/GPUDirect Storage, then zarr-python's GPU buffers, then host decode
 into pinned memory with one copy up
 ([`io/volume.py`](../src/pydvc/io/volume.py)). CCPi raw, npy and mhd inputs
-are converted once with `pydvc convert`.
+are converted once with `pydvc convert`. As of M3 the host-decode path is the
+one implemented; the other two are optimisations to measure against it.
 
 ### Points and results: zarr-vectors
 
@@ -101,10 +102,12 @@ skeletons. It does not store the dense images. In pyDVC it does four jobs:
 1. **The work partition.** A zarr-vectors store is cut into a spatial chunk
    grid. Tiles are unions of chunks, so a tile's input rows and output rows
    live in the same cells, and no two workers ever write the same cell.
-2. **Device reads.** `zarr_vectors.building.read_cells(..., device="cuda")`
-   delivers a tile's points to the GPU in one pooled read, decoded on the
-   device, as CSR over cells. `read_neighbourhood(halo=1)` serves repair and
-   strain across tile borders.
+2. **Pooled reads.** `zarr_vectors.building.read_cells` delivers a tile's
+   points in one pooled read, as CSR over cells (`device="cuda"` decodes on
+   the GPU). `read_neighbourhood(halo=1)` serves repair and strain across tile
+   borders. The worker reads point positions to the host today (they are a
+   few MB per tile and seeds are looked up there); the device read is a
+   drop-in when that becomes worth it.
 3. **Parallel writes without locks.** Workers use zarr-vectors' three-phase
    HPC pattern. A coordinator allocates the arrays and calls
    `defer_presence`. Workers call `write_chunk_*` with
@@ -121,7 +124,12 @@ Constraints taken from upstream, which is under active development:
 * The dependency is pinned to a gpu-backend commit.
 * pyDVC imports only `zarr_vectors.api` and `zarr_vectors.building`.
   Bin assignment (`spatial.chunking.assign_bins`) is internal, so pyDVC
-  assigns bins itself.
+  assigns bins itself (two bins per axis, eight fragments per cell, numbered
+  C-order over (x, y, z) as zarr-vectors' validator expects). A cell's rows
+  are its fragments in order, so the results store reproduces the input's
+  fragments from positions alone.
+* pyDVC's run layout (DOF, grid, source points) sits in the results store's
+  root attributes under `pydvc_results`.
 * `decode="device"` for zstd is used only on stores pyDVC wrote itself.
   nvCOMP trusts its input, and zarr-vectors' guide documents crashes on
   corrupt frames.
@@ -137,7 +145,7 @@ pyDVC replaces the serial order
 | Strategy | Parallelism | Use |
 |---|---|---|
 | `wavefront` | one batch per distance shell (~1.7·k shells for a k³ lattice from a corner) | CCPi parity; one GPU, whole problem resident |
-| `coarse` | coarse sub-grid on pyramid level 1, then every tile independent | production, multi-GPU |
+| `coarse` | coarse sub-grid (every `coarse_stride`-th lattice point) in wavefront order, interpolated (kNN inverse distance) to every point; then every tile independent | production, multi-GPU. The MVP solves the sub-grid at full resolution with whole volumes in memory; the pyramid-level pass that scales to 4096³ is M5 |
 | `rigid` | fully parallel | small or smooth deformation, tests |
 | `fft` (M5) | fully parallel, path-independent | large or discontinuous displacement |
 
@@ -166,10 +174,21 @@ enough GOOD neighbours from the neighbours' median, and solves them again.
   this), plus trilinear and nearest.
 * **Objectives.** CCPi's five, with identical scaling
   ([`kernels/objective.py`](../src/pydvc/kernels/objective.py)).
-* **Precision.** float32 on device. Sample positions are formed relative to
-  the point centre, so rounding stays near 1e-4 voxel even at coordinate
-  4096. ZNSSD sums use compensated (Kahan) accumulation. Every GPU result is
-  checked against the float64 numpy reference in tests.
+* **Precision.** float32 on device. Each point's brick-local centre is split
+  into an integer voxel and a float32 fraction, and sample positions are
+  formed from the fraction, so precision does not depend on the coordinate
+  (tests run at coordinates above 1000). The normal-equation sums are formed
+  on the target shifted by the reference mean, which keeps ZNSSD's
+  `Σv² − n·v̄²` free of cancellation; per-thread partial sums followed by a
+  tree reduction give pairwise-summation error. Every result is checked
+  against the float64 numpy reference in tests.
+* **Engines.** The Gauss–Newton loop is written once
+  ([`solver/gauss_newton.py`](../src/pydvc/solver/gauss_newton.py)); an
+  engine supplies sampling, the one-pass sums, and the update
+  ([`solver/engines.py`](../src/pydvc/solver/engines.py)): `numpy` (float64
+  reference), `cupy` (unfused GPU), `fused` (CUDA kernels), `cpu` (the same
+  fused step in numba, the restructured-CPU baseline) and `emulated` (the
+  CUDA source run on the host, for tests).
 
 ## 8. GPU execution
 
@@ -181,9 +200,31 @@ Each worker process runs three streams:
 | compute | reference sampling, then fused GN steps and batched solves over the active set, batch after batch |
 | host thread | encodes and writes the previous tile's result cells through zarr-vectors (device encode where available) |
 
-The fused kernel ([`kernels/fused.py`](../src/pydvc/kernels/fused.py)) never
-writes per-sample intermediates to global memory. The active set shrinks as
-points converge, so late iterations cost only the stragglers.
+The fused kernels ([`kernels/fused.py`](../src/pydvc/kernels/fused.py),
+[`kernels/cuda/fused_gn.cu`](../src/pydvc/kernels/cuda/fused_gn.cu)) never
+write per-sample intermediates to global memory. `gn_sums` (one block per
+active point) reduces every sample to one row of normal-equation sums in a
+**single pass**, ZNSSD included, since the target mean and norm follow from
+the sums. `gn_solve` (one thread per point) solves and tests each point. The
+active set shrinks as points converge, so late iterations cost only the
+stragglers.
+
+Without a GPU the same `.cu` file is tested two ways: NVRTC compiles every
+specialisation (177, for `compute_90`), and a host emulator
+([`kernels/cuda/emulate.py`](../src/pydvc/kernels/cuda/emulate.py)) runs it
+with every CUDA thread as an OS thread (`__syncthreads` and warp shuffles
+included) against the numpy reference.
+
+As implemented (M3), the worker uses one host prefetch thread (brick reads,
+pinned staging, one copy up), the compute loop, and one writer thread. The
+separate CUDA copy stream is an M4 refinement if the I/O-wait measurement asks
+for it.
+
+`ptxas -v` for sm_90 (no spills anywhere): `gn_sums` uses 128 registers for
+3/6-DOF and 250 registers plus 520 B of stack for 12-DOF, which limits
+occupancy to 16 and 8 warps per SM respectively. Whether that matters is an
+Nsight question for the first GPU run (docs/MVP_PLAN.md risk "12-DOF register
+pressure").
 
 ### Memory budget: H100 80 GB, scenario B (`T = 1024`, u16, M = 4 096, 6-DOF)
 
@@ -205,7 +246,7 @@ GPUs for time series (§11).
 * A tile is written only after it has been solved completely, and its cells
   are written whole. A crash loses at most the tiles in flight.
 * `run` checks which cells already exist (`ResultStore.written_cells`) and skips those tiles.
-* A tile that raises is requeued once, then recorded in `workdir/failed_tiles.json` and reported by `finalize`.
+* A tile that raises is requeued once, then recorded in `workdir/failed_tiles.json`.
 * `plan.json` records the zarr-vectors commit, the template hash and the
   config, so a resumed run cannot silently mix settings.
 

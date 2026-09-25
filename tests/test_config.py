@@ -38,3 +38,11 @@ def test_threshold_section():
     }
     cfg = RunConfig.from_dict(data)
     assert cfg.search.threshold.gray_min == 10.0 and cfg.search.threshold.min_fraction == 0.2
+
+
+def test_halo():
+    data = {"volumes": {"reference": "a", "deformed": "b"}, "points": "p", "output": "o",
+            "subvolume": {"geometry": "sphere", "size": 48}, "search": {"disp_max": 10}}
+    assert RunConfig.from_dict(data).halo() == pytest.approx(24 + 10 + 2)       # docs: h = 36 for scenario B
+    data["subvolume"] = {"geometry": "cube", "size": 20}
+    assert RunConfig.from_dict(data).halo() == pytest.approx(10 * 3 ** 0.5 + 12)
