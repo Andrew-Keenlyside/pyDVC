@@ -53,6 +53,7 @@ tested in CI.
 
 from __future__ import annotations
 
+import dataclasses
 from dataclasses import dataclass
 from typing import Any
 
@@ -130,14 +131,41 @@ class FusedEngine:
     def points_per_call(self, n_samples: int, ndof: int) -> int:
         return max(1, self.SAMPLES_PER_CALL // max(n_samples, 1))
 
-    def prepare(self, brick: Brick) -> FusedBrick:
+    def prepare(self, brick: Brick | FusedBrick) -> FusedBrick:
+        """The kernels' form of a brick (on their device); a brick already in that form is returned as is.
+
+        Prepare each brick once and pass the result to every ``solve_batch`` call: for
+        GPU kernels, preparing a host brick copies it to the device.
+        """
         xp = self.xp
+        if isinstance(brick, FusedBrick):
+            if isinstance(brick.data, xp.ndarray):
+                return brick
+            return dataclasses.replace(brick, data=self._padded(brick.data), geom=xp.asarray(brick.geom))   # other device
         data = np.asarray(brick.data) if not hasattr(type(brick.data), "__cuda_array_interface__") else brick.data
         dt = np.dtype(data.dtype)
         if dt not in BRICK_TYPE:
             data, dt = data.astype(np.float32), np.dtype(np.float32)
-        data = xp.ascontiguousarray(xp.asarray(data))
-        return FusedBrick(data, xp.asarray(brick_geometry(brick)), tuple(float(v) for v in brick.origin_xyz), BRICK_TYPE[dt])
+        return FusedBrick(self._padded(data), xp.asarray(brick_geometry(brick)), tuple(float(v) for v in brick.origin_xyz),
+                          BRICK_TYPE[dt])
+
+    def _padded(self, data: Any) -> Any:
+        """``data`` on the kernels' device, C-contiguous, aligned and tail-padded (:data:`pydvc.io.volume.PAD_BYTES`).
+
+        The u8 kernels read whole aligned 32-bit words. A device array already laid out
+        that way (as :func:`pydvc.io.volume.to_device` makes them) is used without a copy.
+        """
+        from pydvc.io.volume import is_padded, padded_empty
+
+        xp = self.xp
+        if xp is not np and isinstance(data, xp.ndarray) and is_padded(data):
+            return data
+        out = padded_empty(data.shape, data.dtype, xp)
+        if xp is np or isinstance(data, xp.ndarray):
+            out[...] = data
+        else:
+            out.set(np.ascontiguousarray(data))                 # host -> device, straight into the padded buffer
+        return out
 
     def _split(self, brick: FusedBrick, centres: Any) -> tuple[Any, Any]:
         xp = self.xp

@@ -122,6 +122,8 @@ def test_cuda_source_compiles_with_nvrtc():
         "pydvc::gn_sums<12, 1, 2, float>",
         "pydvc::gn_solve<12, 4>",
         "pydvc::sample_values<3, 1, unsigned char>",
+        "pydvc::gn_sums<6, 4, 2, unsigned char>",          # u8 tricubic: the packed row loads
+        "pydvc::sample_values<6, 2, unsigned char>",
     ]
     for e in exprs:
         nvrtc.addNameExpression(prog, e)
@@ -130,3 +132,45 @@ def test_cuda_source_compiles_with_nvrtc():
     except Exception as exc:  # the log names the error
         pytest.fail(f"NVRTC: {exc}\n{nvrtc.getProgramLog(prog)}")
     assert len(nvrtc.getPTX(prog)) > 10_000
+
+
+ODD = (45, 47, 49)       # z, y, x: rows of 49 bytes, so words straddle rows and the buffer ends mid-word
+
+
+def _u8_odd_case():
+    ref = wave_field(ODD)
+    deformed = wave_field(ODD, shift_xyz=U)
+    ref, deformed = (np.clip(np.rint((v - 100.0) * (250.0 / 220.0) + 128), 0, 255).astype(np.uint8) for v in (ref, deformed))
+    hi = np.asarray(ODD[::-1], dtype=np.float64) - 1.0
+    rng = np.random.default_rng(11)
+    # centres whose tricubic stencils reach (or just miss) the last voxels along x, and the last y/z rows
+    corner = hi - rng.uniform(6.5, 10.5, size=(96, 3))      # from ~7.4 voxels in, stencils leave the brick
+    faces = rng.uniform(12.0, 30.0, size=(96, 3))
+    faces[:, 0] = hi[0] - rng.uniform(6.5, 10.5, size=96)
+    return ref, deformed, np.concatenate([corner, faces])
+
+
+def test_u8_packed_row_loads_at_the_end_of_an_odd_sized_brick():
+    """The u8 word loads agree with the numpy reference where stencils touch the last bytes of the buffer."""
+    _emulator_or_skip()
+    ref, deformed, centres = _u8_odd_case()
+    template = make_template(SubvolumeSpec(geometry="sphere", size=12, n_samples=400))
+    search = SearchSpec(dof=6, objective="znssd", interpolation="tricubic", disp_max=3.0)
+    seeds = np.zeros((len(centres), 3))
+    expected = solve_batch(whole_brick(ref), whole_brick(deformed), centres, seeds, template, search, backend="numpy")
+    # hand the engine a view that starts 1 byte into its buffer: prepare must re-align it
+    shifted = np.empty(deformed.nbytes + 1, dtype=np.uint8)[1:].reshape(ODD)
+    shifted[...] = deformed
+    got = solve_batch(whole_brick(ref), whole_brick(shifted), centres, seeds, template, search, backend="emulated")
+    good = expected.status == PointStatus.GOOD
+    assert good.sum() > 100 and (~good).any()        # both GOOD points and stencils that leave the brick
+    assert (got.status == expected.status).mean() >= 0.999
+    np.testing.assert_allclose(got.displacement[good], expected.displacement[good], atol=1e-3)
+
+
+def test_padded_empty_is_aligned_with_a_readable_tail():
+    from pydvc.io.volume import PAD_BYTES, padded_empty
+
+    a = padded_empty(ODD, np.uint8)
+    assert a.flags.c_contiguous and a.ctypes.data % 16 == 0 and a.shape == ODD
+    assert a.base is not None and a.base.nbytes - a.nbytes >= PAD_BYTES

@@ -20,6 +20,14 @@ runs it takes 17.8 min. pyDVC's restructured CPU engine takes 29 s in parity
 mode and 48 s through the CLI, **22–37× faster before any GPU**. That is
 factors 1–4 of §5 alone. The GPU rows above are still modelled.
 
+**Measured on a GPU ([real case A](benchmarks/2026-09-26-case-A-real.md), RTX A2000 12 GB, 32-core workstation).**
+On the real iDVC example (4 680 points), CCPi as iDVC runs it took 37 min
+(2 231 s); pyDVC took **1.6 s on the GPU (1 396×)** and 7.6 s on the 32-core
+CPU engine (293×). On a 285 480-point 3D grid the GPU solve takes 18.7 s
+against ~300 s on the CPU engine: about 16× from the GPU itself, on this small
+workstation card. See §4.4 for why the first GPU run was far slower than
+modelled and what fixed it.
+
 **Where the gain comes from.** Most of it is *restructuring*, not the GPU.
 Compare against a CPU implementation restructured the same way (bricks,
 analytic Jacobian, batched points, all cores busy). The 8×H100 node's
@@ -160,6 +168,38 @@ about 10⁴ times cheaper.** End-to-end, I/O and fixed costs dominate instead.
 | **total** | **~2–6 s** | **~0.5–1.5 min**; budget 1–3 min for file-system contention |
 | vs CCPi | 4–11 min → **~40–300×** | 36–117 h vs 1–3 min → **~700–7 000×** |
 
+### 4.4 Measured on an RTX A2000: why the first run missed the model
+
+The model above counts floating-point work and assumes the kernel is
+compute-bound, with cache traffic well below cache bandwidth. The first GPU
+run on real data reached **~2 % of FP32 peak**: `gn_sums` took 38 µs per
+point-iteration (8 000 samples, 6-DOF, tricubic). The model missed two things
+that count memory *transactions*, not bytes or flops:
+
+* **Sample order.** The sphere template's samples were in random order, so the
+  32 threads of a warp read voxels spread over the whole 80-voxel subvolume
+  and each load instruction touched up to 32 cache lines. Sorting the samples
+  in z, y, x order (the same samples) made `gn_sums` **6×** faster on the GPU
+  and 8 % faster on the CPU engine, whose caches hide the scatter.
+* **Load instructions.** A tricubic sample reads 16 rows of 4 voxels; for u8
+  volumes, two aligned 32-bit loads per row instead of four byte loads gave
+  another **1.7×**.
+
+With both, `gn_sums` runs at **3.7 µs per point-iteration, ~1.2 TFLOP/s by
+the operation count of `bench.throughput` (~15 % of FP32 peak)**, against
+149 µs on 32 CPU cores. Two more effects the model did not include:
+
+* **Per-shell cost.** Wavefront seeding solves shell by shell, each shell a
+  few hundred to a few thousand points with a host sync per Gauss–Newton
+  iteration. A fit of wall time against point count (`bench.density`) gives
+  ~50–80 ms per shell on the GPU, which dominates grids below ~2 000 points.
+* **Uploads.** The in-memory runner re-uploaded both volumes for every shell
+  (2 × 2.4 GB, ~1 s each); now each is uploaded once per run.
+
+The synthetic `bench.throughput` volume (160³) fits in cache and hid the
+first effect: it reported 30–60 k points/s while real data gave ~3 k. Kernel
+changes are now measured with `bench.kernel` on the real volumes.
+
 ## 5. Attribution: which change buys what
 
 Multiplicative factors relative to CCPi as shipped, for scenario B:
@@ -209,9 +249,9 @@ above. As work per byte rises, the ratio moves toward factors 5×6 (~30–300×)
 
 | Milestone | Measurement | Replaces |
 |---|---|---|
-| M0 | CCPi `dvc` pt/s on cases A and S (synthetic), with a thread sweep and N concurrent processes | §3 table. **Done for S** (§3, measured); A pending the data |
-| M2 | Fused-kernel pt/s and achieved TFLOP/s on the dev GPU; restructured-CPU pt/s (numba port of the same step) | §4.2 and factor 5. **Restructured-CPU pt/s done** (§5); GPU pending |
-| M3 | Single-GPU end-to-end, I/O wait fraction, bytes read vs `α` | §4.1, §4.3 A. **Bytes read done** (case M: exactly the planned bricks); GPU end-to-end and I/O wait pending |
+| M0 | CCPi `dvc` pt/s on cases A and S (synthetic), with a thread sweep and N concurrent processes | §3 table. **Done for S** (§3) **and for A** (real data, 32 cores: 2.1 pt/s as iDVC runs it, 6.6 pt/s as 32 processes; [report](benchmarks/2026-09-26-case-A-real.md)) |
+| M2 | Fused-kernel pt/s and achieved TFLOP/s on the dev GPU; restructured-CPU pt/s (numba port of the same step) | §4.2 and factor 5. **Done on the RTX A2000**: 3.7 µs per point-iteration, ~1.2 TFLOP/s by operation count (§4.4); CPU engine 149 µs on 32 cores. Nsight counters still pending (need root on the workstation) |
+| M3 | Single-GPU end-to-end, I/O wait fraction, bytes read vs `α` | §4.1, §4.3 A. **Bytes read done** (case M). **In-memory single-GPU end to end done** (case A: 1.6 s parity, 4.3 s CLI). Tiled GPU run with I/O wait pending |
 | M4 | 1→8 GPU scaling on 2048³–4096³ synthetic cases on H100 | §4.3 B, factor 6 |
 
 Dev-GPU numbers (for example from an RTX A2000 12 GB: 288 GB/s, ~8 TFLOP/s

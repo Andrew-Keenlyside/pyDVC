@@ -1,0 +1,104 @@
+{
+ "machine": "msm12",
+ "recorded": "20260926T181401Z",
+ "reason": "stage 1: sorted templates, packed u8 loads, upload once; first baseline",
+ "git": {
+  "sha": "8846b26aa42739e87f1da11f3af8722f7ba039b9",
+  "branch": "stage1-trust",
+  "dirty": false
+ },
+ "tier": "full",
+ "fingerprint": {
+  "hardware": {
+   "cpu": "x86_64",
+   "cores": 32,
+   "gpus": [
+    "0: NVIDIA RTX A2000 12GB (12 GiB)"
+   ]
+  },
+  "software": {
+   "python": "3.11.16",
+   "packages": {
+    "pydvc": "0.0.1.dev0",
+    "numpy": "2.4.6",
+    "scipy": "1.17.1",
+    "zarr": "3.1.6",
+    "zarr-vectors": "0.9.3.dev45+g06a3bc8a0",
+    "numba": "0.67.0",
+    "cupy-cuda12x": null,
+    "cupy": "14.2.0"
+   },
+   "cuda_runtime": 12090,
+   "nvrtc": [
+    12,
+    9
+   ],
+   "driver": 13000
+  }
+ },
+ "metrics": {
+  "selftest.fused.rmse": {
+   "value": 0.0014151114034894501
+  },
+  "selftest.cupy.rmse": {
+   "value": 0.0014151106555492401
+  },
+  "selftest.cpu.rmse": {
+   "value": 0.001415110212451298
+  },
+  "kernel.case_a.fused.sums_us": {
+   "value": 4.021999891847372,
+   "cv": 0.09302951087694021
+  },
+  "kernel.case_a.fused.sample_us": {
+   "value": 7.231452967971563,
+   "cv": 0.026407486436533813
+  },
+  "kernel.case_a.cpu.sums_us": {
+   "value": 153.38426317157428,
+   "cv": 0.02083455297882703
+  },
+  "kernel.case_a.cpu.sample_us": {
+   "value": 117.80402635963583,
+   "cv": 0.04549011577263617
+  },
+  "casea.fused.seconds": {
+   "value": 1.6739255760330707
+  },
+  "casea.fused.ccpi.median": {
+   "value": 0.05117846055229583
+  },
+  "casea.fused.ccpi.p95": {
+   "value": 0.1516760285555234
+  },
+  "casea.fused.ccpi.status_agreement": {
+   "value": 0.9888888888888889
+  },
+  "casea.cpu.seconds": {
+   "value": 12.025814442022238
+  },
+  "casea.cpu.ccpi.median": {
+   "value": 0.05117882178181922
+  },
+  "casea.cpu.ccpi.p95": {
+   "value": 0.1516754145972816
+  },
+  "casea.cpu.ccpi.status_agreement": {
+   "value": 0.9888888888888889
+  },
+  "e2e.casea_grid24.fused.seconds": {
+   "value": 6.522198877995834
+  }
+ },
+ "arrays": {
+  "casea.fused": {
+   "path": "runs/check/baseline/casea_fused.npz",
+   "sha256": "9f33d6580f3416ba8211c7d707172e484dafbf654fc8106f6e105562ee7ef0fd"
+  },
+  "casea.cpu": {
+   "path": "runs/check/baseline/casea_cpu.npz",
+   "sha256": "a87ae314a384091a5c8f91210dafc6208d0cfc73064f3fbf1617dcc3bca668f2"
+  }
+ },
+ "ccpi_disp": "runs/case_A/ccpi_ccpi-dvc-22.0.0/t32_p1.disp"
+}

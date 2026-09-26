@@ -14,19 +14,15 @@ the [zarr-vectors](https://github.com/AllenInstitute/zarr-vectors-py/tree/gpu-ba
 format through its GPU backend.
 
 > [!NOTE]
-> **Status: M0–M4 software done; no GPU measurement yet.** The whole
-> pipeline works on one node: phantoms, the CCPi baseline, the numpy
-> reference, the fused CUDA kernels, the numba CPU engine, zarr-vectors
-> stores, OME-Zarr bricks, and one process per GPU with resume. The CUDA
-> kernels were developed without a GPU. They are checked by compiling every
-> specialisation with NVRTC and by running the `.cu` source in a host emulator
-> against the numpy reference, but have not yet run on a GPU.
-> **First measured comparison:** on a synthetic twin of the iDVC example
-> (same geometry, points and settings), pyDVC's *CPU* engine on 4 cores is
-> 22–37× faster than CCPi as iDVC runs it
-> ([benchmarks](docs/benchmarks/2026-09-25-M4-case-A-twin.md)).
-> [docs/MVP_PLAN.md](docs/MVP_PLAN.md) lists what the 8×H100 session must
-> still measure.
+> **Status: M0–M4 software done and measured on one GPU.** On the real iDVC
+> example (4 680 points), pyDVC takes 1.6 s on an RTX A2000 where CCPi, as
+> iDVC runs it, takes 37 min; interior points agree with CCPi in status on
+> 100 % of points with no systematic displacement difference
+> ([report](docs/benchmarks/2026-09-26-case-A-real.md)). Random and
+> systematic errors on real data are measured in the
+> [error-floor study](docs/benchmarks/2026-09-26-error-floor-case-A.md).
+> Multi-GPU (M4 on 8 × H100) is implemented but not yet measured. Local
+> checks: `pydvc check {quick,gpu,full}` ([TESTING.md](docs/TESTING.md)).
 
 ---
 
@@ -291,7 +287,10 @@ doi:10.5281/zenodo.7363345.
 
 ## License
 
-**To be decided before any code is ported.** The CCPi DVC engine is GPL-3.0
-and iDVC is Apache-2.0. zarr-vectors-py is BSD-style. If CCPi source is
-translated line by line, pyDVC must be GPL-3.0. A clean-room implementation
-from the published method (the current intent) leaves the choice open.
+pyDVC is licensed under the **GNU General Public License v3.0 or later**
+(`GPL-3.0-or-later`); see [LICENSE](LICENSE).
+
+The CCPi DVC engine is GPL-3.0, so its source may be consulted and adapted
+directly. The other dependencies are compatible: iDVC is Apache-2.0 and
+zarr-vectors-py is BSD-style. M0–M4 were written from the published method,
+before the licence was chosen.

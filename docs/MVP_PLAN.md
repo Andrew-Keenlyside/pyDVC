@@ -105,9 +105,9 @@ Catmull-Rom matches Lekien–Marsden to 1.1e-12. The warp Jacobian matches
 finite differences. On S, Q1 synthetic passes: RMSE 0.0011 noise-free and 0.0103
 with 2 % noise, 100 % GOOD. pyDVC agrees with CCPi on S (median |Δu| 0.0016,
 100 % status agreement). The CCPi-agreement check and the "A in minutes" check
-on case A wait for the data. The licence is still undecided; M1 was written
+on case A wait for the data. M1 was written
 clean-room from the published method and black-box runs of `dvc`, without
-consulting CCPi source.
+consulting CCPi source. (The licence has since been set to GPL-3.0-or-later.)
 
 ### M2: single-GPU kernels (2–3 weeks)
 
@@ -282,11 +282,11 @@ rather than failures.
 | GPU zstd decode of image chunks not available through zarr-python | medium | low | Host decode into pinned memory with threads; measure before optimising. |
 | Coarse seeds fail near discontinuities (cracks, slip bands) | medium | medium | Repair pass (M5); per-tile wavefront fallback; FFT seeding. |
 | float32 precision | low | medium | Relative coordinates, compensated sums, float64 reference tests. |
-| Licensing (CCPi is GPL-3.0) | — | high if ignored | Clean-room implementation from the published method; decide the licence before M1. |
+| ~~Licensing (CCPi is GPL-3.0)~~ | resolved | — | pyDVC is GPL-3.0-or-later (2026-09-26), so CCPi source may be consulted. |
 
 ## 7. Decisions needed from the project owner
 
-1. **Licence**: this decides whether CCPi code may be consulted line by line or only the method (README).
+1. ~~**Licence**~~: decided 2026-09-26, GPL-3.0-or-later (README).
 2. **Target cluster**: file system and per-node bandwidth, container runtime, CUDA version, and whether GPUDirect Storage is enabled. This sets the M4 I/O path.
 3. **Real datasets** beyond the iDVC example, to run after M4. Ideally one large time series.
 4. **iDVC integration**: whether the `pydvc ccpi` drop-in moves into the MVP. It adds about 1 week.

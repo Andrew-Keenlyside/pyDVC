@@ -33,6 +33,9 @@ class VolumeSpec:
     raw_shape_xyz: tuple[int, int, int] | None = None   # vol_wide, vol_high, vol_tall
     raw_dtype: str | None = None                         # from vol_bit_depth + vol_endian, e.g. "<u2"
     raw_header_bytes: int = 0                            # vol_hdr_lngth
+    # Gaussian low-pass applied to both volumes as they are read (voxels; 0 = off, as CCPi).
+    # ~1 voxel removes most interpolation bias (docs/benchmarks/2026-09-26-error-floor-case-A.md).
+    prefilter_sigma: float = 0.0
 
 
 @dataclass(frozen=True)

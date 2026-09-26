@@ -14,7 +14,11 @@ arithmetic, so it is an estimate; Nsight Compute gives the measured figure::
 
 Command line::
 
-    python -m pydvc.bench.throughput --backend cpu numpy --samples 2000 --dof 6 12 --batch 2048
+    python -m pydvc.bench.throughput --backend cpu numpy --samples 2000 --dof 6 12 --batch 2048 --json out.json
+
+The default 160³ volume is small: with a small subvolume the working set stays
+in cache, so GPU numbers here are optimistic. Use ``--shape`` for a larger
+volume, or :mod:`pydvc.bench.kernel` for the same kernels on real data.
 """
 
 from __future__ import annotations
@@ -41,6 +45,7 @@ class Throughput:
     achieved_tflops: float | None = None
     io_wait_fraction: float | None = None
     mean_iterations: float | None = None
+    us_per_point_iteration: float | None = None   # comparable with pydvc.bench.kernel's sums figure
     settings: dict[str, Any] = field(default_factory=dict)
 
 
@@ -115,6 +120,7 @@ def kernel_microbench(
     centres = rng.uniform(margin, np.asarray(shape[::-1]) - 1.0 - margin, size=(batch, 3))
     seeds = np.broadcast_to([0.8, -0.4, 0.0], (batch, 3))
     engine = make_engine(backend)
+    ref, deformed = engine.prepare(ref), engine.prepare(deformed)      # upload outside the timed region
     sync = _sync(engine)
     solve_batch(ref, deformed, centres[: min(batch, 64)], seeds[: min(batch, 64)], template, search, engine=engine)
     best, res = np.inf, None
@@ -135,7 +141,9 @@ def kernel_microbench(
         points_per_second=batch / best,
         achieved_tflops=flops / best / 1e12,
         mean_iterations=float(n_iter.mean()),
-        settings=dict(n_samples=n_samples, dof=dof, interpolation=interpolation, objective=objective, size=size),
+        us_per_point_iteration=best / (n_iter.sum() + batch) * 1e6,
+        settings=dict(n_samples=n_samples, dof=dof, interpolation=interpolation, objective=objective, size=size,
+                      shape=list(shape)),
     )
 
 
@@ -186,20 +194,31 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--interpolation", default="tricubic")
     p.add_argument("--batch", type=int, default=2048)
     p.add_argument("--size", type=float, default=32.0)
+    p.add_argument("--shape", type=int, nargs=3, default=[160, 160, 160], metavar=("Z", "Y", "X"))
+    p.add_argument("--json", help="write every result, with the environment, to this file")
     args = p.parse_args(argv)
+    results = []
     for backend in args.backend:
         for m in args.samples:
             for dof in args.dof:
                 r = kernel_microbench(
                     n_samples=m, dof=dof, interpolation=args.interpolation, objective=args.objective,
-                    batch=args.batch, backend=backend, size=args.size,
+                    batch=args.batch, backend=backend, size=args.size, shape=tuple(args.shape),
                 )
                 print(
                     f"{backend:7s} M={m:5d} dof={dof:2d} {r.points:6d} pts {r.seconds_total:7.3f} s "
                     f"{r.points_per_second:10.1f} pt/s  ~{1e3 * r.achieved_tflops:8.2f} GFLOP/s  "
-                    f"iters {r.mean_iterations:.2f}  [{r.hardware}]"
+                    f"iters {r.mean_iterations:.2f}  {r.us_per_point_iteration:7.2f} µs/pt-iter  [{r.hardware}]"
                 )
-                _ = asdict(r)
+                results.append(asdict(r))
+    if args.json:
+        import json
+        from pathlib import Path
+
+        from pydvc.bench.smoke import environment
+
+        Path(args.json).parent.mkdir(parents=True, exist_ok=True)
+        Path(args.json).write_text(json.dumps({"environment": environment(), "results": results}, indent=1))
 
 
 if __name__ == "__main__":

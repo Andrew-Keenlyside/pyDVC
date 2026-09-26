@@ -39,3 +39,24 @@ def test_against_truth(tmp_path):
              objmin=np.zeros(5), displacement=truth[::-1])
     acc = metrics.against_truth(tmp_path / "r.npz", tmp_path / "t.npz")
     assert acc.frac_good == 1.0 and max(acc.rmse) == 0.0
+
+
+def test_agreement_with_another_code_counts_points_good_in_both():
+    from pydvc.bench.metrics import compare_arrays
+
+    ours = np.array([0, 0, -1, 0])            # GOOD, GOOD, RANGE_FAIL, GOOD
+    theirs = np.array([0, -1, 0, 0])          # CCPi codes
+    d = np.zeros((4, 3))
+    acc = compare_arrays(d, d, ours, ref_status=theirs)
+    assert acc.n_good == 3 and acc.n_good_ref == 3 and acc.n_good_both == 2
+    assert acc.status_agreement == 0.5
+    assert acc.status_confusion == {"-1/0": 1, "0/-1": 1, "0/0": 2}
+
+
+def test_edge_mask_flags_subvolumes_that_leave_the_volume():
+    from pydvc.bench.metrics import edge_mask
+
+    xyz = np.array([[50.0, 50.0, 50.0], [95.0, 50.0, 50.0], [50.0, 50.0, 50.0], [3.0, 50.0, 50.0]])
+    disp = np.array([[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [44.0, 0.0, 0.0], [0.0, 0.0, 0.0]])
+    # volume 100^3, reach 6: the second point leaves at x = 101, the third only after moving, the fourth at x = -3
+    np.testing.assert_array_equal(edge_mask(xyz, disp, (100, 100, 100), 6.0), [False, True, True, True])

@@ -34,3 +34,28 @@ def test_sphere_is_deterministic_per_seed():
     c = make_template(SubvolumeSpec(geometry="sphere", size=20, n_samples=500, seed=4))
     np.testing.assert_array_equal(a.offsets, b.offsets)
     assert a.digest() == b.digest() != c.digest()
+
+
+_LEXSORT = np.lexsort         # the test below patches numpy's (templates.np is numpy)
+
+
+def _zyx_sorted(o):
+    return np.array_equal(o, o[_LEXSORT((o[:, 0], o[:, 1], o[:, 2]))])
+
+
+def test_sphere_offsets_are_in_zyx_order_and_the_same_samples(monkeypatch):
+    from pydvc.geometry import templates
+
+    spec = SubvolumeSpec(geometry="sphere", size=30, n_samples=3000)
+    sorted_t = templates.make_template(spec)
+    assert _zyx_sorted(sorted_t.offsets)
+    monkeypatch.setattr(templates.np, "lexsort", lambda keys: np.arange(len(keys[0])))   # the pre-sorting template
+    unsorted = templates.make_template(spec)
+    assert not _zyx_sorted(unsorted.offsets)
+    key = lambda o: o[_LEXSORT(o.T[::-1])]
+    np.testing.assert_array_equal(key(sorted_t.offsets), key(unsorted.offsets))
+
+
+def test_cube_offsets_were_already_in_zyx_order():
+    t = make_template(SubvolumeSpec(geometry="cube", size=10, n_samples=1000))
+    assert _zyx_sorted(t.offsets)

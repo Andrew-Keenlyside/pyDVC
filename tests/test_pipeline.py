@@ -121,3 +121,31 @@ def test_prepare_refuses_a_results_store_with_other_settings(case):
     other = dataclasses.replace(cfg, search=dataclasses.replace(cfg.search, dof=3))
     with pytest.raises(ValueError, match="other settings"):
         coordinator.prepare(other, backend=_backend())
+
+
+def test_a_changed_template_cannot_be_mixed_into_existing_results(case):
+    cfg = _variant(case, "template", seeding=SeedingSpec(strategy="rigid"))
+    coordinator.prepare(cfg, backend=_backend())
+    changed = dataclasses.replace(cfg, subvolume=dataclasses.replace(cfg.subvolume, n_samples=cfg.subvolume.n_samples + 1))
+    with pytest.raises(ValueError, match="subvolume template"):
+        coordinator.prepare(changed, backend=_backend())
+
+
+def test_the_worker_refuses_a_store_written_with_another_template(case):
+    from pydvc.io.results import _ATTR, _root_attrs
+    from pydvc.pipeline.worker import TileWorker
+
+    cfg = _variant(case, "doctored", seeding=SeedingSpec(strategy="rigid"))
+    coordinator.prepare(cfg, backend=_backend())
+    attrs = _root_attrs(cfg.output, "r+")
+    attrs[_ATTR] = {**attrs[_ATTR], "template_digest": "0" * 16}
+    with pytest.raises(ValueError, match="subvolume template"):
+        TileWorker(cfg, backend=_backend())
+
+
+def test_a_changed_prefilter_cannot_be_mixed_into_existing_results(case):
+    cfg = _variant(case, "prefilter", seeding=SeedingSpec(strategy="rigid"))
+    coordinator.prepare(cfg, backend=_backend())
+    changed = dataclasses.replace(cfg, volumes=dataclasses.replace(cfg.volumes, prefilter_sigma=1.0))
+    with pytest.raises(ValueError, match="prefiltered"):
+        coordinator.prepare(changed, backend=_backend())

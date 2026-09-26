@@ -10,6 +10,7 @@ volumes:
   deformed: data/magma/dataset_1.npy
   raw_shape_xyz: [1520, 1257, 1260]
   raw_dtype: "|u1"
+  prefilter_sigma: 0.0      # 0 keeps CCPi parity; ~1.0 removes most interpolation bias (docs/benchmarks/2026-09-26-error-floor-case-A.md)
 points: data/magma/central_grid.roi          # imported to a zarr-vectors store by `pydvc plan`
 output: runs/magma/results.zarrvectors
 workdir: runs/magma

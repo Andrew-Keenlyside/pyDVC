@@ -119,6 +119,8 @@ def solve_in_memory(
     template = make_template(cfg.subvolume)
     t_read = time.perf_counter() - t0
     engine = make_engine(backend)
+    # once: every wavefront shell reuses them (for a GPU engine, preparing uploads the whole volume)
+    ref, deformed = engine.prepare(ref), engine.prepare(deformed)
 
     n, ndof = len(xyz), cfg.search.dof
     res = Results(
@@ -141,8 +143,9 @@ def solve_in_memory(
 
     def solve(idx: np.ndarray, s: np.ndarray) -> None:
         out = solve_batch(ref, deformed, res.xyz[idx], s, template, cfg.search, engine=engine)
-        res.params[idx], res.status[idx], res.objmin[idx] = out.params, out.status, out.objmin
-        res.n_iter[idx], res.seed[idx] = out.n_iter, out.seed
+        host = {k: (v.get() if hasattr(v, "get") else v) for k, v in vars(out).items()}  # GPU engines return cupy
+        res.params[idx], res.status[idx], res.objmin[idx] = host["params"], host["status"], host["objmin"]
+        res.n_iter[idx], res.seed[idx] = host["n_iter"], host["seed"]
 
     t1 = time.perf_counter()
     strategy = strategy or cfg.seeding.strategy

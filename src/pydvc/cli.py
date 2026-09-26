@@ -121,6 +121,12 @@ def cmd_selftest(args: argparse.Namespace) -> None:
     raise SystemExit(selftest(argv))
 
 
+def cmd_check(args: argparse.Namespace) -> None:
+    from pydvc.bench.check import cmd
+
+    raise SystemExit(cmd(args))
+
+
 def cmd_ccpi(args: argparse.Namespace) -> None:
     """Drop-in for CCPi's ``dvc <dvc_in>``: same inputs, same .disp/.stat outputs, same progress lines for iDVC."""
     raise todo("M5", "pydvc ccpi")
@@ -198,6 +204,12 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--backends", nargs="+", help="default: every backend available here")
     s.add_argument("--no-ccpi", action="store_true", help="skip the CCPi dvc comparison")
     s.set_defaults(func=cmd_selftest)
+
+    s = sub.add_parser("check", help="local check suite: tests, GPU tests, benchmarks, compared with this machine's baseline")
+    from pydvc.bench.check import add_arguments
+
+    add_arguments(s)
+    s.set_defaults(func=cmd_check)
 
     s = sub.add_parser("ccpi", help="drop-in replacement for CCPi's `dvc <dvc_in>`")
     s.add_argument("dvc_in")
