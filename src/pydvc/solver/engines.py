@@ -156,7 +156,12 @@ class XpEngine:
     def points_per_call(self, n_samples: int, ndof: int) -> int:
         return max(1, self.SAMPLES_PER_CALL // max(n_samples, 1))
 
-    def prepare(self, brick: Brick) -> XpBrick:
+    def prepare(self, brick: Brick | XpBrick) -> XpBrick:
+        """The engine's form of a brick (a device copy on cupy); a brick already in that form is returned as is."""
+        if isinstance(brick, XpBrick):
+            if isinstance(brick.data, self.xp.ndarray):
+                return brick
+            return XpBrick(self.xp.asarray(brick.data), brick.origin_xyz, brick.valid_lo_hi)   # another engine's device
         return XpBrick(self.xp.asarray(brick.data), brick.origin_xyz, brick.valid_lo_hi_xyz)
 
     def _moved(self, params: Any, offsets: Any) -> Any:

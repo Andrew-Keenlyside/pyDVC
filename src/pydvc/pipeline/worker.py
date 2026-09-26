@@ -169,9 +169,9 @@ class TileWorker:
             "n_iter": np.zeros(n, dtype=np.uint8),
             "seed": seeds.astype(np.float32),
         }
+        ref, deformed = self.engine.prepare(loaded.ref), self.engine.prepare(loaded.deformed)   # once per tile
         for batch in iter_batches(morton_order(xyz), self._batch_size(n)):
-            res = solve_batch(loaded.ref, loaded.deformed, xyz[batch], seeds[batch], self.template, self.cfg.search,
-                              engine=self.engine)
+            res = solve_batch(ref, deformed, xyz[batch], seeds[batch], self.template, self.cfg.search, engine=self.engine)
             params = _host(res.params)
             out["params"][batch] = params
             out["displacement"][batch] = params[:, :3]

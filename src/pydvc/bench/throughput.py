@@ -115,6 +115,7 @@ def kernel_microbench(
     centres = rng.uniform(margin, np.asarray(shape[::-1]) - 1.0 - margin, size=(batch, 3))
     seeds = np.broadcast_to([0.8, -0.4, 0.0], (batch, 3))
     engine = make_engine(backend)
+    ref, deformed = engine.prepare(ref), engine.prepare(deformed)      # upload outside the timed region
     sync = _sync(engine)
     solve_batch(ref, deformed, centres[: min(batch, 64)], seeds[: min(batch, 64)], template, search, engine=engine)
     best, res = np.inf, None

@@ -87,8 +87,8 @@ class BatchResult:
 
 
 def solve_batch(
-    ref_brick: Brick,
-    def_brick: Brick,
+    ref_brick: Brick | Any,  # a Brick, or the same brick after ``engine.prepare``
+    def_brick: Brick | Any,
     centres: Any,            # (B, 3) point-space (x, y, z)
     seeds: Any,              # (B, 3) starting displacement
     template: Template,
@@ -103,6 +103,10 @@ def solve_batch(
     ``fused`` the production CUDA kernels and ``cpu`` the same fused step on
     CPU cores (M2). Results come back on the engine's device. Pass ``engine``
     to reuse one (and its compiled kernels) across calls.
+
+    Callers that solve the same bricks repeatedly (wavefront shells, batches of
+    a tile) should pass bricks already put through ``engine.prepare``: preparing
+    a host brick for a GPU engine copies the whole brick to the device.
     """
     if search.method != "fagn":
         raise todo("M5", f"solve_batch(method={search.method!r})")

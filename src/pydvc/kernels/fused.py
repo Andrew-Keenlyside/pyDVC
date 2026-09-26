@@ -53,6 +53,7 @@ tested in CI.
 
 from __future__ import annotations
 
+import dataclasses
 from dataclasses import dataclass
 from typing import Any
 
@@ -130,8 +131,17 @@ class FusedEngine:
     def points_per_call(self, n_samples: int, ndof: int) -> int:
         return max(1, self.SAMPLES_PER_CALL // max(n_samples, 1))
 
-    def prepare(self, brick: Brick) -> FusedBrick:
+    def prepare(self, brick: Brick | FusedBrick) -> FusedBrick:
+        """The kernels' form of a brick (on their device); a brick already in that form is returned as is.
+
+        Prepare each brick once and pass the result to every ``solve_batch`` call: for
+        GPU kernels, preparing a host brick copies it to the device.
+        """
         xp = self.xp
+        if isinstance(brick, FusedBrick):
+            if isinstance(brick.data, xp.ndarray):
+                return brick
+            return dataclasses.replace(brick, data=xp.asarray(brick.data), geom=xp.asarray(brick.geom))   # other device
         data = np.asarray(brick.data) if not hasattr(type(brick.data), "__cuda_array_interface__") else brick.data
         dt = np.dtype(data.dtype)
         if dt not in BRICK_TYPE:

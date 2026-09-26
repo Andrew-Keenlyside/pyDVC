@@ -119,6 +119,8 @@ def solve_in_memory(
     template = make_template(cfg.subvolume)
     t_read = time.perf_counter() - t0
     engine = make_engine(backend)
+    # once: every wavefront shell reuses them (for a GPU engine, preparing uploads the whole volume)
+    ref, deformed = engine.prepare(ref), engine.prepare(deformed)
 
     n, ndof = len(xyz), cfg.search.dof
     res = Results(

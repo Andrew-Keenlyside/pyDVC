@@ -261,8 +261,12 @@ class NumbaEngine:
     def points_per_call(self, n_samples: int, ndof: int) -> int:
         return max(1, self.SAMPLES_PER_CALL // max(n_samples, 1))
 
-    def prepare(self, brick: Brick) -> CpuBrick:
+    def prepare(self, brick: Brick | CpuBrick) -> CpuBrick:
+        """Flat contiguous data and geometry; a brick already prepared is returned as is."""
         from pydvc.kernels.fused import brick_geometry
+
+        if isinstance(brick, CpuBrick):
+            return brick
 
         data = np.ascontiguousarray(np.asarray(brick.data))
         return CpuBrick(data.reshape(-1), brick_geometry(brick).astype(np.int64), tuple(float(v) for v in brick.origin_xyz))
