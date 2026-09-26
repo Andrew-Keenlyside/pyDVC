@@ -14,12 +14,19 @@ the [zarr-vectors](https://github.com/AllenInstitute/zarr-vectors-py/tree/gpu-ba
 format through its GPU backend.
 
 > [!NOTE]
-> **Status: design and scaffold only.** The package layout, interfaces and
-> plan are in place, but the modules are stubs that raise `NotImplementedError`
-> tagged with the milestone that delivers them. See
-> [docs/MVP_PLAN.md](docs/MVP_PLAN.md) for the build order and
-> [docs/PERFORMANCE.md](docs/PERFORMANCE.md) for the expected speed-up, which
-> is a model and has not been measured yet.
+> **Status: M0–M4 software done; no GPU measurement yet.** The whole
+> pipeline works on one node: phantoms, the CCPi baseline, the numpy
+> reference, the fused CUDA kernels, the numba CPU engine, zarr-vectors
+> stores, OME-Zarr bricks, and one process per GPU with resume. The CUDA
+> kernels were developed without a GPU. They are checked by compiling every
+> specialisation with NVRTC and by running the `.cu` source in a host emulator
+> against the numpy reference, but have not yet run on a GPU.
+> **First measured comparison:** on a synthetic twin of the iDVC example
+> (same geometry, points and settings), pyDVC's *CPU* engine on 4 cores is
+> 22–37× faster than CCPi as iDVC runs it
+> ([benchmarks](docs/benchmarks/2026-09-25-M4-case-A-twin.md)).
+> [docs/MVP_PLAN.md](docs/MVP_PLAN.md) lists what the 8×H100 session must
+> still measure.
 
 ---
 
@@ -120,7 +127,9 @@ pyDVC/
 │   ├── MVP_PLAN.md               milestones M0–M5, acceptance criteria, risks
 │   └── PERFORMANCE.md            cost model and speed-up estimate
 ├── scripts/slurm/
-│   └── pydvc_8xh100.sbatch       plan → seed → solve → finalize on a GPU node
+│   ├── pydvc_8xh100.sbatch       plan → seed → run → finalize on a GPU node
+│   ├── case_L.sbatch             synthesise case L, then Q2 / Q3 / end to end
+│   └── storage_baseline.sh       fio + pyDVC read-path bandwidth
 ├── src/pydvc/
 │   ├── config.py                 RunConfig (YAML / CCPi dvc_in import)
 │   ├── status.py                 PointStatus (CCPi-compatible codes)
@@ -138,11 +147,13 @@ pyDVC/
 │   ├── kernels/                  array-namespace (numpy | cupy) numerics
 │   │   ├── xp.py                 device dispatch
 │   │   ├── interpolate.py        batched nearest / trilinear / tricubic (+ gradient)
-│   │   ├── objective.py          batched SAD / SSD / ZSSD / NSSD / ZNSSD (+ residuals)
+│   │   ├── objective.py          batched SAD / SSD / ZSSD / NSSD / ZNSSD, one-pass normal-equation sums
 │   │   ├── fused.py              fused CUDA Gauss–Newton step (cupy.RawModule)
+│   │   ├── cuda/                 fused_gn.cu, and a host emulator that runs it without a GPU (tests)
 │   │   └── cpu_fused.py          same step on CPU cores (numba), for the restructured-CPU baseline
 │   ├── solver/
 │   │   ├── gauss_newton.py       batched FA-GN (CCPi parity) and IC-GN
+│   │   ├── engines.py            numpy / cupy / fused / cpu engines behind one GN loop
 │   │   ├── coarse.py             batched translation grid search; FFT-CC seeding
 │   │   └── seeding.py            kNN graph, wavefront shells, coarse-field seeds, repair
 │   ├── pipeline/
@@ -150,17 +161,40 @@ pyDVC/
 │   │   ├── batching.py           batch sizing and spatially coherent ordering
 │   │   ├── worker.py             per-GPU tile loop with prefetch double-buffering
 │   │   ├── launch.py             process-per-GPU launcher, SLURM / torchrun / MPI rank discovery
-│   │   └── coordinator.py        prepare / seed / repair / finalize
+│   │   ├── coordinator.py        prepare / seed / run / repair / finalize
+│   │   └── inmemory.py           whole-volume single-process solve (reference, parity)
 │   ├── synth/phantoms.py         speckle volumes + known displacement fields
 │   ├── post/strain.py            strain from displacement (kNN least squares)
-│   └── bench/                    CCPi baseline runner, accuracy metrics, throughput
+│   └── bench/                    CCPi baseline + head-to-head (case A), accuracy, throughput, scaling
 └── tests/                        acceptance tests per milestone (unimplemented → skipped)
 ```
 
 ## Planned usage
 
-The CLI surface is fixed now so the milestones build toward it. None of these
-commands work yet.
+The CLI surface is fixed now so the milestones build toward it. Working today
+(M0–M4) on one node, with one process per GPU (`--backend fused|cupy|cpu|numpy`,
+default: `fused` with a GPU, else `cpu` with numba):
+
+```bash
+pydvc synth --shape 256 256 256 --field affine --spacing 16 --out data/synth256   # case S
+pydvc plan     data/synth256/config.yaml        # points store, tiles, bricks, memory check, results store
+pydvc seed     data/synth256/config.yaml        # wavefront / coarse / rigid
+pydvc run      data/synth256/config.yaml        # tile loop; skips tiles already written (resume)
+pydvc finalize data/synth256/config.yaml --disp
+pydvc compare  data/synth256/results.zarrvectors data/synth256/truth.npz
+pydvc solve    data/synth256/config.yaml        # whole-volume in-memory solve (reference / parity)
+python -m pydvc.bench.ccpi_baseline data/synth256/config.yaml --workdir runs/ccpi_S
+python -m pydvc.bench.throughput --backend fused cpu --samples 2000 --dof 6 12
+
+# the iDVC example dataset (Zenodo 7363345): CCPi as iDVC runs it vs pyDVC, speed and agreement
+python -m pydvc.bench.case_a fetch --data data/magma
+python -m pydvc.bench.case_a run --data data/magma --out runs/case_A --ccpi-exe /path/to/ccpi-dvc-22.0.0/bin/dvc
+
+# one 8x H100 node: case L, storage baseline, Q2/Q3, end to end
+sbatch scripts/slurm/case_L.sbatch 2048 /scratch/pydvc/caseL2048
+```
+
+Repair, the CCPi drop-in and tested multi-node runs arrive with M5:
 
 ```bash
 # 1. make a synthetic case with a known displacement field
@@ -194,22 +228,22 @@ coordinator.run(cfg)          # one process per visible GPU
 coordinator.finalize(cfg, export_disp=True)
 ```
 
-## Installation (development)
+## Installation and testing
 
-Requires Python ≥ 3.11 (because of zarr v3), CUDA 12 and a GPU with ≥ 12 GB
-for development. zarr-vectors is pinned to a commit on its `gpu-backend`
-branch, since that branch is under active development.
+Python ≥ 3.11. **[docs/TESTING.md](docs/TESTING.md)** walks through
+installation, the local self-test, the first GPU run, the iDVC example dataset
+and the cluster runs. In short:
 
 ```bash
-git clone <this repo> pyDVC && cd pyDVC
-pip install -e ".[gpu,test]"          # cupy + zarr-vectors GPU extras
-pip install -e ".[gpu-io]"            # optional: kvikio / GPUDirect Storage
-pip install -e ".[mpi]"               # optional: mpi4py for multi-node
+micromamba create -f envs/pydvc-cpu.yml && micromamba activate pydvc   # or envs/pydvc-gpu.yml (CUDA 12)
+pip install -e ".[test,cpu-fast]"     # pyDVC + zarr + zarr-vectors (pinned gpu-backend commit) + numba
+pytest -q && pydvc selftest           # ~5 min; PASS/FAIL per backend
+eval "$(scripts/get_ccpi_dvc.sh)"     # optional: CCPi dvc 22.0.0 for the baselines
 ```
 
-In conda environments, install `cupy` from conda-forge and `kvikio` from
-rapidsai rather than via pip extras, following the
-[zarr-vectors GPU guide](https://github.com/AllenInstitute/zarr-vectors-py/blob/gpu-backend/docs/how_to/gpu.md).
+zarr-vectors is pinned to a commit on its `gpu-backend` branch, since that
+branch is under active development. Optional extras: `[gpu]` (cupy, GPU
+codecs), `[gpu-io]` (kvikio / GPUDirect Storage), `[mpi]`, `[tiff]`.
 
 ## Data conventions
 

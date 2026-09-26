@@ -23,10 +23,12 @@ search:
   method: fagn
 
 seeding:
-  strategy: coarse             # solve every 4th lattice point first, interpolate seeds, tiles independent
+  # rigid: every tile independent; fine after rigid pre-alignment (|u - rigid_trans| within a few voxels).
+  # 'coarse' currently solves its sub-grid with both whole volumes in memory (2 x 137 GB here), which
+  # prepare/seed refuse unless the host has the RAM; the pyramid-level coarse pass that scales is M5.
+  strategy: rigid
   coarse_stride: 4
-  coarse_level: 1              # on the 2x-downsampled pyramid level: ~34 GB instead of 275 GB
-  repair_passes: 1
+  coarse_level: 1
 
 cluster:
   tile_shape: [1024, 1024, 1024]

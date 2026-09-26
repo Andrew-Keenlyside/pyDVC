@@ -5,4 +5,5 @@
 ``worker``       per-GPU loop: read tile, prefetch next bricks, solve, write
 ``launch``       rank discovery (SLURM / torchrun / MPI) and process-per-GPU spawning
 ``coordinator``  prepare / seed / run / repair / finalize, the stages behind the CLI
+``inmemory``     whole-volume, single-process runner: the numpy reference path (M1) and parity runs
 """

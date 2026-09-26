@@ -1,10 +1,13 @@
 # 256^3 u16 speckle with an affine field: the development case for M1-M3.
 # Fits a 12 GB workstation GPU. Generate with:
 #   pydvc synth --shape 256 256 256 --field affine --spacing 16 --out data/synth256
+# (which also writes data/synth256/config.yaml with absolute paths), then e.g.
+#   pydvc solve configs/synthetic_small.yaml
+# Points are a CCPi .roi until M3 adds the zarr-vectors point-cloud store.
 volumes:
   reference: data/synth256/ref.ome.zarr
   deformed: data/synth256/def.ome.zarr
-points: data/synth256/points.zarrvectors
+points: data/synth256/points.roi
 output: runs/synth256/results.zarrvectors
 workdir: runs/synth256
 

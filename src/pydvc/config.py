@@ -8,11 +8,13 @@ vectors are ``(x, y, z)`` in voxels; shapes and boxes of arrays are ``(z, y, x)`
 
 from __future__ import annotations
 
+import dataclasses
+import types
+import typing
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
-from pydvc._todo import todo
 
 Geometry = Literal["cube", "sphere"]
 Objective = Literal["sad", "ssd", "zssd", "nssd", "znssd"]
@@ -101,21 +103,98 @@ class RunConfig:
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> RunConfig:
-        raise todo("M1", "RunConfig.from_yaml")
+        import yaml
+
+        with open(path) as fh:
+            return cls.from_dict(yaml.safe_load(fh))
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> RunConfig:
+        """Build from nested plain data. Unknown keys and invalid choices raise ``ValueError``."""
+        return _build(cls, data, "config")
 
     @classmethod
     def from_ccpi(cls, path: str | Path) -> RunConfig:
-        """Build from a CCPi ``dvc_in`` file (see :mod:`pydvc.io.ccpi`)."""
-        raise todo("M4", "RunConfig.from_ccpi")
+        """Build from a CCPi ``dvc_in`` file (see :mod:`pydvc.io.ccpi`); relative paths resolve against its folder."""
+        from pydvc.io.ccpi import read_dvc_input, run_config_from_dvc_input
+
+        return run_config_from_dvc_input(read_dvc_input(path), base_dir=Path(path).parent)
 
     def to_yaml(self, path: str | Path) -> None:
-        raise todo("M1", "RunConfig.to_yaml")
+        import yaml
+
+        with open(path, "w") as fh:
+            yaml.safe_dump(self.to_dict(), fh, sort_keys=False)
+
+    def to_dict(self) -> dict[str, Any]:
+        return _plain(dataclasses.asdict(self))
 
     def halo(self) -> float:
         """Brick margin around a tile's points, in voxels.
 
         The subvolume's farthest sample (half-diagonal for a cube, since 6/12-DOF
-        warps rotate it), plus ``disp_max``, plus the 2-voxel cubic stencil, plus
-        the spread of seeds within the tile (added at plan time).
+        warps rotate it), plus ``disp_max``, plus the 2-voxel cubic stencil. The
+        spread of seeds within a tile is added at plan time.
         """
-        raise todo("M3", "RunConfig.halo")
+        import math
+
+        half = 0.5 * self.subvolume.size
+        aspect = self.subvolume.aspect
+        if self.subvolume.geometry == "cube":
+            extent = half * math.sqrt(sum(a * a for a in aspect))
+        else:
+            extent = half * max(aspect)
+        return extent + self.search.disp_max + 2.0
+
+def _plain(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {k: _plain(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_plain(v) for v in value]
+    if hasattr(value, "item") and not isinstance(value, (str, bytes)):     # numpy scalars
+        return value.item()
+    return value
+
+
+def _build(tp: Any, value: Any, where: str) -> Any:
+    """Convert YAML data to the annotated type ``tp`` (dataclasses, Optional, tuples, Literals, scalars)."""
+    origin, args = typing.get_origin(tp), typing.get_args(tp)
+    if origin in (typing.Union, types.UnionType):
+        if value is None and type(None) in args:
+            return None
+        (inner,) = [a for a in args if a is not type(None)]
+        return _build(inner, value, where)
+    if dataclasses.is_dataclass(tp):
+        if not isinstance(value, dict):
+            raise ValueError(f"{where}: expected a mapping, got {value!r}")
+        hints = typing.get_type_hints(tp)
+        names = [f.name for f in dataclasses.fields(tp)]
+        unknown = sorted(set(value) - set(names))
+        if unknown:
+            raise ValueError(f"{where}: unknown keys {unknown}")
+        return tp(**{k: _build(hints[k], v, f"{where}.{k}") for k, v in value.items()})
+    if origin is Literal:
+        if value not in args:
+            raise ValueError(f"{where}: {value!r} is not one of {list(args)}")
+        return value
+    if origin is tuple:
+        if not isinstance(value, (list, tuple)):
+            raise ValueError(f"{where}: expected a list, got {value!r}")
+        if len(args) == 2 and args[1] is Ellipsis:
+            return tuple(_build(args[0], v, where) for v in value)
+        if len(value) != len(args):
+            raise ValueError(f"{where}: expected {len(args)} values, got {len(value)}")
+        return tuple(_build(a, v, where) for a, v in zip(args, value))
+    if tp is float:
+        return float(value)
+    if tp is int:
+        if isinstance(value, float) and not value.is_integer():
+            raise ValueError(f"{where}: expected an integer, got {value!r}")
+        return int(value)
+    if tp is bool:
+        if not isinstance(value, bool):
+            raise ValueError(f"{where}: expected true/false, got {value!r}")
+        return value
+    if tp is str:
+        return str(value)
+    return value

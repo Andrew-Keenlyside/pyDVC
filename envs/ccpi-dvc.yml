@@ -1,0 +1,12 @@
+# CCPi DVC (the engine iDVC runs), for the baselines. Kept apart from pyDVC's environment.
+# Pinned to 22.0.0: the 25.0.0 conda build's tricubic path is broken (docs/benchmarks).
+# 22.0.0 needs _openmp_mutex >= 5.1, which only Anaconda's `main` channel has. If your site
+# cannot use that channel, scripts/get_ccpi_dvc.sh unpacks the same binary without conda.
+#   micromamba create -f envs/ccpi-dvc.yml
+#   export PYDVC_CCPI_DVC=$(micromamba run -n ccpi-dvc which dvc)
+name: ccpi-dvc
+channels:
+  - ccpi
+  - https://repo.anaconda.com/pkgs/main
+dependencies:
+  - ccpi-dvc=22.0.0

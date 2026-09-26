@@ -14,6 +14,12 @@
 | **A**: iDVC example / CCPi test case, 4 680 pts | 4–11 min, 1 workstation | 2–6 s, **1× H100**, bound by I/O | **~40–300×** |
 | **B**: 4096³ u16 pair, ~8.4 M pts | 36–117 h per process (and the cloud must be split into ~10³ runs) | 1–3 min, **8× H100**, bound by I/O | **~700–7 000×** vs 1 process;<br>~250–3 500× vs a CPU node running 4 processes |
 
+**Measured so far (CPU only, [case A twin](benchmarks/2026-09-25-M4-case-A-twin.md)).**
+On 4 vCPU, with the iDVC example's geometry, points and settings, CCPi as iDVC
+runs it takes 17.8 min. pyDVC's restructured CPU engine takes 29 s in parity
+mode and 48 s through the CLI, **22–37× faster before any GPU**. That is
+factors 1–4 of §5 alone. The GPU rows above are still modelled.
+
 **Where the gain comes from.** Most of it is *restructuring*, not the GPU.
 Compare against a CPU implementation restructured the same way (bricks,
 analytic Jacobian, batched points, all cores busy). The 8×H100 node's
@@ -68,6 +74,27 @@ About 90 % of CCPi's per-point time in case A is fixed overhead, terms (1)
 and (2), which are proportional to the box volume, not to the correlation
 work. The reference volume is re-read and re-differentiated for every point,
 even though neighbouring points share most of their box.
+
+**Measured (M0, 2026-09-25, [benchmarks](benchmarks/2026-09-25-M0-M1-case-S.md)).**
+On synthetic case S (256³ u16, 2 197 points, sphere 32 / 2 000 samples,
+`disp_max` 8, so `L = 52`; ccpi-dvc 22.0.0 on a 4-vCPU 2.1 GHz Xeon VM):
+
+| | model (terms 1–4) | measured |
+|---|---|---|
+| per point, 12-DOF, 1 process | 4–15 ms (67–250 pt/s) | **26.7 ms (37.5 pt/s)** |
+| per point, 6-DOF, 1 process | slightly less | 22.9 ms (43.7 pt/s) |
+| OMP threads 1 → 4 | "terms 2–4 only" | **no gain** (37.5 → 36.3 pt/s) |
+| 4 processes on 4 cores | "2–3×" | 3.3× (123 pt/s, 12-DOF; 155 pt/s, 6-DOF) |
+| case A twin (sphere 80, 8 000 samples, L = 160), 6-DOF, iDVC mode (1 process, 4 threads) | 45–150 ms (7–20 pt/s) | **228 ms (4.4 pt/s)**; 4 680 points in 17.8 min |
+| case A twin, 4 processes × 1 thread | — | 807 s (5.8 pt/s); one thread alone takes 680 ms per point |
+
+The case A rows come from a synthetic twin with the example's geometry, points
+and settings ([benchmarks](benchmarks/2026-09-25-M4-case-A-twin.md)), because
+the Zenodo data could not be downloaded in the development environment.
+CCPi is 2–7× slower per point than modelled for case S, and 1.5–5× for case A.
+For case S, threads do not help and 12-DOF costs only 14 % more than 6-DOF:
+fixed per-point overhead dominates. For case A's larger boxes, 4 threads give
+3× over one.
 
 At scenario B's scale, two further limits apply:
 
@@ -146,6 +173,14 @@ Multiplicative factors relative to CCPi as shipped, for scenario B:
 | 5 | H100 vs a 32-core CPU node for this kernel (practical 150–500 k pt/s per GPU vs 12–35 k pt/s per node; the CPU reaches ~0.2–0.6 TFLOP/s on the gathers) | **GPU only** | **~4–40× per GPU** |
 | 6 | 8 GPUs, independent tiles | **GPU only** | ~7–8× on compute; 1× on shared I/O |
 
+**Measured (M2, [benchmarks](benchmarks/2026-09-25-M2-M3-cpu.md)).** The
+restructured CPU backend as built, the fused step in numba on 4 vCPU,
+reaches 443 pt/s at scenario B's settings (M = 4 096, 6-DOF, sphere 48), about
+110 pt/s per core, and 6.8–7.4× CCPi's best on the same cores for case S.
+Scaled linearly to 32 cores that is about 3.5 k pt/s, **3–10× below the
+12–35 k assumed below**. Until a vectorised CPU kernel shows otherwise, the
+GPU-vs-restructured-CPU ratios in §1 are conservative.
+
 Factors 1–4 give the restructured CPU backend: about 12–35 k pt/s per node,
 so scenario B takes 4–12 min per node, still limited mainly by compute. The
 8×H100 node takes 1–3 min, limited by I/O. That ratio is the ~1.5–12× quoted
@@ -174,9 +209,9 @@ above. As work per byte rises, the ratio moves toward factors 5×6 (~30–300×)
 
 | Milestone | Measurement | Replaces |
 |---|---|---|
-| M0 | CCPi `dvc` pt/s on cases A and S (synthetic), with a thread sweep and N concurrent processes | §3 table |
-| M2 | Fused-kernel pt/s and achieved TFLOP/s on the dev GPU; restructured-CPU pt/s (numba port of the same step) | §4.2 and factor 5 |
-| M3 | Single-GPU end-to-end, I/O wait fraction, bytes read vs `α` | §4.1, §4.3 A |
+| M0 | CCPi `dvc` pt/s on cases A and S (synthetic), with a thread sweep and N concurrent processes | §3 table. **Done for S** (§3, measured); A pending the data |
+| M2 | Fused-kernel pt/s and achieved TFLOP/s on the dev GPU; restructured-CPU pt/s (numba port of the same step) | §4.2 and factor 5. **Restructured-CPU pt/s done** (§5); GPU pending |
+| M3 | Single-GPU end-to-end, I/O wait fraction, bytes read vs `α` | §4.1, §4.3 A. **Bytes read done** (case M: exactly the planned bricks); GPU end-to-end and I/O wait pending |
 | M4 | 1→8 GPU scaling on 2048³–4096³ synthetic cases on H100 | §4.3 B, factor 6 |
 
 Dev-GPU numbers (for example from an RTX A2000 12 GB: 288 GB/s, ~8 TFLOP/s

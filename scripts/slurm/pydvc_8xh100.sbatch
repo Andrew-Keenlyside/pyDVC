@@ -1,13 +1,13 @@
 #!/bin/bash
-# pyDVC on one or more 8x H100 nodes: plan -> seed -> run -> repair -> finalize.
+# pyDVC on one or more 8x H100 nodes: plan -> seed -> run -> finalize.
 #
 #   sbatch scripts/slurm/pydvc_8xh100.sbatch configs/large_8xh100.yaml
-#   sbatch --nodes=4 scripts/slurm/pydvc_8xh100.sbatch configs/large_8xh100.yaml   # multi-node (M5)
+#   sbatch --nodes=4 scripts/slurm/pydvc_8xh100.sbatch configs/large_8xh100.yaml   # multi-node: untested (M5)
 #
 # One task per node. `pydvc run` spawns one process per local GPU with a shared
-# tile queue, and nodes split tiles by the LPT assignment in plan.json.
-# Every stage is re-runnable; `run` skips tiles already written, so resubmitting
-# after a time-out resumes the job.
+# tile queue; nodes split tiles by the LPT assignment in plan.json (SLURM_NODEID).
+# Every stage is re-runnable: `run` skips tiles already written, so resubmitting
+# after a time-out or a lost worker solves only the missing tiles.
 #SBATCH --job-name=pydvc
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
@@ -19,6 +19,7 @@
 
 set -euo pipefail
 CONFIG=${1:?usage: sbatch pydvc_8xh100.sbatch <config.yaml>}
+BACKEND=${PYDVC_BACKEND:-fused}
 
 # Optional: stage inputs to node-local NVMe when the parallel file system is the bottleneck
 # (see docs/ARCHITECTURE.md, I/O). Point the config at $LOCAL_SCRATCH copies if you do.
@@ -27,8 +28,8 @@ CONFIG=${1:?usage: sbatch pydvc_8xh100.sbatch <config.yaml>}
 export ZARR_VECTORS_GPU_ENCODE=1
 # export ZARR_VECTORS_GPU_IO=kvikio   # only with GPUDirect Storage configured (KVIKIO_COMPAT_MODE=OFF)
 
-srun --nodes=1 --ntasks=1 pydvc plan     "$CONFIG"
-srun --nodes=1 --ntasks=1 pydvc seed     "$CONFIG"
-srun                      pydvc run      "$CONFIG"
-srun                      pydvc repair   "$CONFIG"
+srun --nodes=1 --ntasks=1 pydvc plan     "$CONFIG" --backend "$BACKEND"
+srun --nodes=1 --ntasks=1 pydvc seed     "$CONFIG" --backend "$BACKEND"
+srun                      pydvc run      "$CONFIG" --backend "$BACKEND"
+# `pydvc repair` (re-seed failed points from good neighbours) arrives with M5.
 srun --nodes=1 --ntasks=1 pydvc finalize "$CONFIG" --disp
