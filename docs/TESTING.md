@@ -5,9 +5,9 @@ first on a local machine (CPU, then GPU if you have one), then on a cluster
 node. Every step prints or writes a result you can check; the last section
 lists what to send back.
 
-Status going in: M0–M4 are implemented and pass their tests on CPU. The CUDA
-kernels have been checked with NVRTC and a host emulator but **have not yet run
-on a GPU**, so step 2 is the first real GPU execution.
+Status: M0–M4 pass their tests on CPU and, since September 2026, on a GPU
+(RTX A2000 12 GB, CUDA 12.9). Day to day, use the **local check suite**
+(section 1): pyDVC has no hosted CI, because its GPU code needs a GPU.
 
 ## 0. Install
 
@@ -21,10 +21,10 @@ git clone <this repo> pyDVC && cd pyDVC
 micromamba create -f envs/pydvc-cpu.yml && micromamba activate pydvc
 pip install -e ".[test,cpu-fast]"
 
-# GPU (CUDA 12 driver): the same, plus cupy and the GPU codecs
+# GPU (CUDA 12 driver): the same; cupy comes from conda, the GPU codecs from pip
 micromamba create -f envs/pydvc-gpu.yml && micromamba activate pydvc-gpu
 pip install -e ".[test,cpu-fast]"
-pip install "zarr-vectors[gpu-codecs] @ git+https://github.com/AllenInstitute/zarr-vectors-py.git@06a3bc8a08afefc02cd1ffb265d67a03df798b87"
+pip install nvidia-nvcomp-cu12            # zarr-vectors' GPU codecs; NOT the [gpu-codecs] extra (see below)
 
 # CCPi dvc 22.0.0 for the baselines, either as a conda environment ...
 micromamba create -f envs/ccpi-dvc.yml
@@ -34,18 +34,66 @@ eval "$(scripts/get_ccpi_dvc.sh)"
 ```
 
 `pip install -e .` fetches zarr-vectors from GitHub at the pinned commit, so it
-needs `git` and access to github.com. CCPi 22.0.0 needs `_openmp_mutex >= 5.1`,
+needs `git` and access to github.com.
+
+Three GPU pitfalls, each met on the first GPU run:
+
+* **Always activate the environment** (or use `conda run -n pydvc-gpu ...`).
+  CuPy finds its CUDA headers through `CONDA_PREFIX`. Calling the env's
+  `python` directly makes it fall back to a system CUDA (for example
+  `/usr/local/cuda-12.4`), whose headers do not match the environment's NVRTC,
+  and CuPy's reductions fail to compile (`incomplete type "__nv_fp8_e8m0"`).
+  `pydvc check` refuses to start in that state.
+* **One CuPy only.** zarr-vectors' `[gpu-codecs]` extra pulls in the pip wheel
+  `cupy-cuda12x`, which overwrites conda's cupy in the same directory. If that
+  happened: `pip uninstall -y cupy-cuda12x`, then
+  `micromamba install --force-reinstall cupy-core cupy`.
+* **Run tests as `python -m pytest`**, so a `pytest` elsewhere on `PATH`
+  (for example `~/.local/bin`) cannot shadow the environment's. CCPi 22.0.0 needs `_openmp_mutex >= 5.1`,
 which only Anaconda's `main` channel provides. That is why `envs/ccpi-dvc.yml`
 lists it, and why `get_ccpi_dvc.sh` exists for sites that cannot use it. Do
 not use `ccpi-dvc` 25.0.0 as a reference: its tricubic interpolation is broken
 ([benchmarks](benchmarks/2026-09-25-M0-M1-case-S.md)).
 
-## 1. Local check (5 minutes)
+## 1. Local check suite
 
 ```bash
-pytest -q                 # ~200 tests, ~3 min on 4 cores; GPU tests skip without a GPU
-pydvc selftest            # PASS/FAIL table; writes runs/selftest/selftest.json
+pydvc check quick                             # ~3 min: tests without GPU/slow ones (the CUDA emulator included)
+pydvc check gpu                               # + GPU tests and `pydvc selftest`
+pydvc check full --case-a runs/case_A_data    # + slow tests, kernel benchmark, case A accuracy and speed (~15 min)
 ```
+
+Each run writes `runs/check/<time>-<commit>/check.json` (and `runs/check/latest`),
+prints PASS / PASS (partial) / WARN / FAIL, and exits non-zero on FAIL. The
+rules are in [`bench/check.py`](../src/pydvc/bench/check.py):
+
+* **Accuracy fails the check**: tests, selftest, kernel sums within 1e-4 of
+  float64, case A results against the baseline arrays (status ≥ 99.9 %,
+  |du| ≤ 1e-3 voxel) and against CCPi (no worse than the baseline).
+* **Speed is compared on the same hardware only**, and only on an idle GPU:
+  kernel timings warn at +7 % and fail at +20 %, end-to-end at +10 % / +25 %.
+
+Baselines are per machine: `docs/benchmarks/baselines/<machine>.json`
+(`PYDVC_MACHINE`, default the host name) is committed, and the reference result
+arrays it points to live in `runs/check/baseline/`. After a change that is meant
+to move the numbers, record a new baseline with a reason, from a `full` run:
+
+```bash
+pydvc check full --case-a runs/case_A_data --update-baseline --reason "sorted templates"
+```
+
+| variable | meaning |
+|---|---|
+| `PYDVC_CASE_A` | case A data directory (instead of `--case-a`); without it the case A steps are skipped (`PASS (partial)`) |
+| `PYDVC_CASE_A_CACHE` | where C-ordered `.raw` copies of the case A volumes go (default `runs/case_A`, ~4.8 GB) |
+| `PYDVC_MACHINE` | baseline name |
+| `PYDVC_CCPI_DVC` | CCPi `dvc` 22.0.0, for the selftest's CCPi check and `bench.case_a` |
+
+To run the quick tier before every push (opt in, once per clone):
+`git config core.hooksPath scripts/hooks`; skip once with `git push --no-verify`.
+
+`pydvc selftest` on its own gives a PASS/FAIL table for a fresh install and
+writes `runs/selftest/selftest.json`.
 
 `selftest` reports the environment (packages, GPUs, CCPi). It writes a 96³
 phantom and runs `plan → seed → run → finalize` on every backend available.
@@ -60,18 +108,26 @@ on a 4-core VM:
 PASS
 ```
 
-## 2. First GPU run (workstation or one cluster GPU)
+## 2. GPU runs by hand (workstation or one cluster GPU)
 
-Do this before any large run: it is where a kernel bug would show up.
+Do this on any new GPU or driver before a large run: it is where a kernel bug
+would show up. `pydvc check gpu` runs the first two lines.
 
 ```bash
-pytest -m gpu -q                     # cupy + fused vs the numpy reference; the pipeline on "fused" vs "cpu"
+python -m pytest -m gpu -q           # cupy + fused vs the numpy reference; wavefront, threshold, u8 edge cases
 pydvc selftest                       # now also runs "fused" and "cupy" and their parity checks
+python -m pydvc.bench.kernel --backends fused cpu --json runs/kernel.json    # real data if PYDVC_CASE_A is set
+python -m pydvc.bench.density --backends fused --json runs/density.json      # time vs points on case A
 python -m pydvc.bench.throughput --backend fused cupy cpu --samples 2000 4096 --dof 6 12 --size 48 --batch 32768
 ```
 
-The throughput lines give pt/s and an estimated FLOP/s per backend (M2's
-question). For the measured figure, run the fused line under Nsight Compute:
+`bench.kernel` times the two kernels a solve spends its time in (µs per
+point-iteration) on 2 048 points of the case A volumes and checks them against
+float64. `bench.throughput` gives pt/s and an estimated FLOP/s per backend on a
+synthetic volume that fits in cache, so it overstates GPU speed on real data.
+`bench.density` fits `t = t0 + τ·S + c·N` to wall time against point count.
+For measured kernel counters, run under Nsight Compute (it needs root, or the
+driver option `NVreg_RestrictProfilingToAdminUsers=0`, on most workstations):
 
 ```bash
 ncu --set full --kernel-name regex:gn_sums -o gn_sums \
@@ -161,8 +217,8 @@ Notes:
 
 ## 5. What to send back
 
-* `runs/selftest/selftest.json` from each machine.
-* The throughput lines and, if you ran it, the Nsight report.
+* `runs/check/latest/check.json` (a `full` run) from each machine.
+* `runs/selftest/selftest.json`, `runs/kernel.json` and, if you ran it, the Nsight report.
 * `runs/case_A/report.md` and `report.json`.
 * From the cluster: the case L job log, `scaling/scaling.json`, the
   `storage_baseline_*.txt` file, `WORKDIR/run_stats.json` and `plan.json`.

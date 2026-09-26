@@ -87,14 +87,18 @@ def synthetic(n_points: int, seed: int = 0, shape: tuple[int, int, int] = (256, 
 
 
 def _timer(engine: Any):
-    """``fn -> seconds`` for one call: GPU event timing on cupy engines, wall clock otherwise."""
+    """``(fn, repeats) -> (median seconds, coefficient of variation)``: GPU event timing on cupy engines, wall clock otherwise."""
     xp = getattr(engine, "xp", np)
+
+    def stats(times: Any) -> tuple[float, float]:
+        t = np.asarray(times, dtype=np.float64).ravel()
+        return float(np.median(t)), float(t.std() / t.mean()) if len(t) > 1 and t.mean() > 0 else 0.0
+
     if xp is not np:
         from cupyx.profiler import benchmark
 
         def gpu(fn, repeats):
-            r = benchmark(fn, (), n_repeat=repeats, n_warmup=1)
-            return float(np.median(r.gpu_times))
+            return stats(benchmark(fn, (), n_repeat=repeats, n_warmup=1).gpu_times)
 
         return gpu
 
@@ -105,7 +109,7 @@ def _timer(engine: Any):
             t0 = time.perf_counter()
             fn()
             times.append(time.perf_counter() - t0)
-        return float(np.median(times))
+        return stats(times)
 
     return cpu
 
@@ -149,12 +153,14 @@ def measure(case: Case, backend: str, repeats: int = 5) -> dict[str, Any]:
     dfm, centres, params, idx, q, shift, offsets = inputs(eng, n)
     got = check_sums(eng, dfm, centres, params, q, shift, offsets)
     timer = _timer(eng)
-    t_sums = timer(lambda: eng.sums(dfm, centres, params, idx, q, shift, offsets, case.search), repeats)
-    t_sample = timer(lambda: eng.sample(dfm, centres, params, offsets, case.search), repeats)
+    t_sums, cv_sums = timer(lambda: eng.sums(dfm, centres, params, idx, q, shift, offsets, case.search), repeats)
+    t_sample, cv_sample = timer(lambda: eng.sample(dfm, centres, params, offsets, case.search), repeats)
     return {
         "backend": backend,
         "sums_us_per_point_iter": t_sums / n * 1e6,
         "sample_us_per_point": t_sample / n * 1e6,
+        "sums_cv": cv_sums,
+        "sample_cv": cv_sample,
         "points": n,
         "repeats": repeats,
         "rel_err": rel_err(got, want),
