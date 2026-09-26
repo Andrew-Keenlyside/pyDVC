@@ -71,6 +71,7 @@ CCPI_SLACK = {"median": 0.005, "p95": 0.005, "status_agreement": -0.002}
 ARRAY_STATUS_MIN, ARRAY_DU_MAX = 0.999, 1e-3
 KERNEL_REL_ERR_MAX = 1e-4
 E2E_SPACING = 24.0                                             # 86 100 points on case A
+CPU_BUSY_LOAD = 0.5                                            # load average per core above which CPU timings are skipped
 
 
 @dataclasses.dataclass
@@ -350,7 +351,7 @@ def perf_group(metric: str) -> str | None:
 
 
 def compare(metrics: dict[str, dict[str, float]], baseline: dict[str, Any] | None, *, same_hardware: bool,
-            gpu_busy: bool) -> list[Finding]:
+            gpu_busy: bool, cpu_busy: bool = False) -> list[Finding]:
     """Findings for every metric against the baseline (pure: unit-tested in tests/test_check.py)."""
     if not baseline:
         return [Finding("baseline", "skip", "no baseline for this machine; record one with --update-baseline")]
@@ -368,6 +369,9 @@ def compare(metrics: dict[str, dict[str, float]], baseline: dict[str, Any] | Non
                 continue
             if gpu_busy:
                 found.append(Finding(name, "skip", "GPU in use by other processes"))
+                continue
+            if cpu_busy and ".cpu." in name:
+                found.append(Finding(name, "skip", "CPU loaded by other processes"))
                 continue
             warn, fail = PERF_LIMITS[group]
             noise = 3.0 * float(base[name].get("cv", 0.0))
@@ -492,6 +496,8 @@ def run(tier: str, *, case_a: str | None = None, cache: str | None = None, machi
     report: dict[str, Any] = {"tier": tier, "machine": machine, "started": started, "git": git, "fingerprint": fp,
                               "gpu": state, "case_a": str(data) if data else None}
     say = lambda msg: print(msg, flush=True)                                            # noqa: E731
+    cores = os.cpu_count() or 1
+    load_before = os.getloadavg()[0]                     # other work only: nothing of ours has started
 
     steps: list[Step] = []
     if not any(f.status == "fail" for f in pre):
@@ -509,10 +515,17 @@ def run(tier: str, *, case_a: str | None = None, cache: str | None = None, machi
             say(f"[{step.status.upper():4s}] {step.name} ({step.seconds:.0f} s): {step.detail.splitlines()[0] if step.detail else ''}")
             steps.append(step)
 
+    load_after = os.getloadavg()[0]                      # ours is mostly GPU work by now; a heavy load is someone else
+    cpu_busy = max(load_before, load_after) > CPU_BUSY_LOAD * cores
+    report["cpu_load"] = {"before": load_before, "after": load_after, "cores": cores, "busy": cpu_busy}
+    if cpu_busy:
+        pre.append(Finding("CPU idle", "warn", f"load average {max(load_before, load_after):.0f} on {cores} cores: "
+                                               "CPU timings not compared"))
     metrics = {k: v for s in steps for k, v in s.metrics.items()}
     same_hw = bool(baseline) and baseline["fingerprint"]["hardware"] == fp["hardware"]
     same_sw = bool(baseline) and baseline["fingerprint"]["software"] == fp["software"]
-    findings = pre + compare(metrics, baseline, same_hardware=same_hw, gpu_busy=bool(state["other_processes"]))
+    findings = pre + compare(metrics, baseline, same_hardware=same_hw, gpu_busy=bool(state["other_processes"]),
+                             cpu_busy=cpu_busy)
     findings += bitwise_findings(steps, baseline, same_sw)
     result = overall(steps, findings, require_case_a=require_case_a)
     report |= {"steps": [dataclasses.asdict(s) for s in steps], "findings": [dataclasses.asdict(f) for f in findings],
@@ -523,8 +536,8 @@ def run(tier: str, *, case_a: str | None = None, cache: str | None = None, machi
     if update_baseline:
         if result == "FAIL":
             say("not updating the baseline: the check failed")
-        elif state["other_processes"]:
-            say("not updating the baseline: other processes were using the GPU, so its timings are not representative")
+        elif state["other_processes"] or cpu_busy:
+            say("not updating the baseline: other processes were using the GPU or CPU, so timings are not representative")
         elif not reason:
             say("not updating the baseline: give --reason")
         else:

@@ -79,3 +79,10 @@ def test_results_are_compared_with_the_baseline_arrays(tmp_path):
 def test_junit_counts(tmp_path):
     (tmp_path / "r.xml").write_text('<testsuites><testsuite tests="5" failures="1" errors="0" skipped="2"/></testsuites>')
     assert junit_counts(tmp_path / "r.xml") == {"tests": 5, "failures": 1, "errors": 0, "skipped": 2}
+
+
+def test_cpu_timings_are_skipped_when_other_work_loads_the_cpu():
+    base = {"metrics": {"kernel.case_a.cpu.sums_us": {"value": 150.0}, "kernel.case_a.fused.sums_us": {"value": 4.0}}}
+    m = {"kernel.case_a.cpu.sums_us": {"value": 260.0}, "kernel.case_a.fused.sums_us": {"value": 4.1}}
+    found = {f.metric: f.status for f in compare(m, base, same_hardware=True, gpu_busy=False, cpu_busy=True)}
+    assert found == {"kernel.case_a.cpu.sums_us": "skip", "kernel.case_a.fused.sums_us": "pass"}
