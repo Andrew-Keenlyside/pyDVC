@@ -1,5 +1,5 @@
 [build-system]
-requires = ["hatchling>=1.24"]
+requires = ["hatchling>=1.27"]   # PEP 639 license metadata
 build-backend = "hatchling.build"
 
 [project]
@@ -10,6 +10,8 @@ readme = "README.md"
 # zarr v3 (required by zarr-vectors) needs Python >= 3.11.
 requires-python = ">=3.11"
 authors = [{ name = "Andrew Keenlyside" }]
+license = "GPL-3.0-or-later"
+license-files = ["LICENSE"]
 classifiers = [
     "Development Status :: 1 - Planning",
     "Intended Audience :: Science/Research",

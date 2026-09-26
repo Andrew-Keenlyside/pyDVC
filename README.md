@@ -291,7 +291,10 @@ doi:10.5281/zenodo.7363345.
 
 ## License
 
-**To be decided before any code is ported.** The CCPi DVC engine is GPL-3.0
-and iDVC is Apache-2.0. zarr-vectors-py is BSD-style. If CCPi source is
-translated line by line, pyDVC must be GPL-3.0. A clean-room implementation
-from the published method (the current intent) leaves the choice open.
+pyDVC is licensed under the **GNU General Public License v3.0 or later**
+(`GPL-3.0-or-later`); see [LICENSE](LICENSE).
+
+The CCPi DVC engine is GPL-3.0, so its source may be consulted and adapted
+directly. The other dependencies are compatible: iDVC is Apache-2.0 and
+zarr-vectors-py is BSD-style. M0–M4 were written from the published method,
+before the licence was chosen.
