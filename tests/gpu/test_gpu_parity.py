@@ -72,3 +72,68 @@ def test_gpu_pipeline_matches_the_cpu_engine(tmp_path):
     assert (out["cpu"]["status"] == out["fused"]["status"]).mean() >= 0.999
     good = out["cpu"]["status"] == 0
     np.testing.assert_allclose(out["fused"]["displacement"][good], out["cpu"]["displacement"][good], atol=1e-3)
+
+
+def _wave_bricks(u=(0.6, -0.3, 0.2)):
+    import cupy as cp
+
+    ref_np, def_np = wave_field(SHAPE), wave_field(SHAPE, shift_xyz=u)
+    gpu = (whole_brick(cp.asarray(ref_np, dtype=cp.float32)), whole_brick(cp.asarray(def_np, dtype=cp.float32)))
+    return (whole_brick(ref_np), whole_brick(def_np)), gpu
+
+
+def test_fused_threshold_and_basin_search_match_numpy():
+    """The status bookkeeping around the solve (threshold test, basin grid search) on real cupy arrays."""
+    import cupy as cp
+
+    from pydvc.config import ThresholdSpec
+
+    (ref, dfm), (ref_g, dfm_g) = _wave_bricks()
+    rng = np.random.default_rng(3)
+    centres = rng.uniform(20.0, 44.0, size=(128, 3))
+    template = make_template(SubvolumeSpec(geometry="sphere", size=16, n_samples=1000))
+    search = SearchSpec(dof=6, disp_max=3.0, basin_radius=1.0, threshold=ThresholdSpec(gray_min=100.0, gray_max=1e4, min_fraction=0.5))
+
+    expected = solve_batch(ref, dfm, centres, np.zeros((128, 3)), template, search, backend="numpy")
+    got = solve_batch(ref_g, dfm_g, cp.asarray(centres), cp.zeros((128, 3), dtype=cp.float32), template, search, backend="fused")
+
+    status = cp.asnumpy(got.status)
+    assert (expected.status == -4).any() and (expected.status == 0).any()      # both branches exercised
+    assert (status == expected.status).mean() >= 0.999
+    good = expected.status == 0
+    np.testing.assert_allclose(cp.asnumpy(got.displacement)[good], expected.displacement[good], atol=1e-3)
+
+
+def test_fused_solve_is_deterministic():
+    """No atomics in the fused kernels, so the same batch gives bit-identical results (the check suite relies on it)."""
+    import cupy as cp
+
+    _, (ref_g, dfm_g) = _wave_bricks()
+    centres = cp.asarray(np.random.default_rng(5).uniform(20.0, 44.0, size=(256, 3)))
+    template = make_template(SubvolumeSpec(geometry="sphere", size=16, n_samples=1000))
+    search = SearchSpec(dof=12, disp_max=3.0)
+    runs = [solve_batch(ref_g, dfm_g, centres, cp.zeros((256, 3), dtype=cp.float32), template, search, backend="fused")
+            for _ in range(2)]
+    for name in ("params", "status", "n_iter", "objmin"):
+        np.testing.assert_array_equal(cp.asnumpy(getattr(runs[0], name)), cp.asnumpy(getattr(runs[1], name)), err_msg=name)
+
+
+def test_inmemory_wavefront_on_fused_matches_the_cpu_engine(tmp_path):
+    """The in-memory wavefront runner (parity mode, `pydvc seed`) on a GPU engine: host results, parity with cpu."""
+    from pydvc.config import RunConfig
+    from pydvc.pipeline.inmemory import load_points, solve_in_memory
+    from pydvc.synth.phantoms import default_field, make_case
+
+    shape = (80, 80, 80)
+    config = make_case(tmp_path / "case", shape_zyx=shape, field=default_field("affine", shape), spacing=8.0,
+                       chunk=40, shard=80, subvolume=SubvolumeSpec(geometry="sphere", size=16, n_samples=500),
+                       search=SearchSpec(dof=6, disp_max=8.0))
+    cfg = RunConfig.from_yaml(config)
+    point_id, xyz = load_points(cfg)
+    out = {b: solve_in_memory(cfg, point_id, xyz, strategy="wavefront", backend=b) for b in ("cpu", "fused")}
+    for name in ("status", "params", "objmin", "n_iter", "seed"):
+        assert isinstance(getattr(out["fused"], name), np.ndarray), name
+    assert (out["cpu"].status == out["fused"].status).mean() >= 0.999
+    good = out["cpu"].status == 0
+    assert good.mean() > 0.9
+    np.testing.assert_allclose(out["fused"].params[good, :3], out["cpu"].params[good, :3], atol=1e-3)

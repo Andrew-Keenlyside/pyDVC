@@ -138,18 +138,18 @@ def _solve_chunk(eng: Any, ref: Any, deformed: Any, centres: Any, seeds: Any, of
     if search.threshold is not None:
         th = search.threshold
         frac = ((f >= th.gray_min) & (f <= th.gray_max)).mean(axis=1)
-        st.status[(st.status == PointStatus.GOOD) & (frac < th.min_fraction)] = int(PointStatus.THRESH_FAIL)
+        st.status[(st.status == int(PointStatus.GOOD)) & (frac < th.min_fraction)] = int(PointStatus.THRESH_FAIL)
     q, shift = reference_terms(f, search.objective)
     if search.basin_radius > 0:
         from pydvc.solver.coarse import translation_grid_search
 
-        good = xp.flatnonzero(st.status == PointStatus.GOOD)
+        good = xp.flatnonzero(st.status == int(PointStatus.GOOD))
         if good.size:
             translation_grid_search(
                 lambda c, p: eng.sample(deformed, c, p, offsets, search), f[good], centres[good], st.params, good, search
             )
 
-    active = st.status == PointStatus.GOOD
+    active = st.status == int(PointStatus.GOOD)
     for _ in range(search.max_iterations):
         idx = xp.flatnonzero(active)
         if idx.size == 0:
@@ -160,7 +160,7 @@ def _solve_chunk(eng: Any, ref: Any, deformed: Any, centres: Any, seeds: Any, of
 
     if bool(active.any()):
         st.status[active] = int(PointStatus.CONVG_FAIL if search.report_convg_fail else PointStatus.GOOD)
-    final = xp.flatnonzero((st.status == PointStatus.GOOD) | (st.status == PointStatus.CONVG_FAIL))
+    final = xp.flatnonzero((st.status == int(PointStatus.GOOD)) | (st.status == int(PointStatus.CONVG_FAIL)))
     if final.size:
         g, inside = eng.sample(deformed, centres[final], st.params[final], offsets, search)
         st.objmin[final] = objective(f[final], g, search.objective).astype(eng.dtype)
