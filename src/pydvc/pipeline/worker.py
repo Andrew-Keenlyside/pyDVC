@@ -125,6 +125,7 @@ class TileWorker:
         self.points = PointCloud(points_store or cfg.points)
         self.results = ResultStore(cfg.output, mode="r+")
         self.template = make_template(cfg.subvolume)
+        self.results.check_template(self.template.digest())
         self.engine = make_engine(self.backend)
         self.seed_field = load_seed_field(seed_field_path)
 

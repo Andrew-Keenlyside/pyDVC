@@ -121,7 +121,7 @@ def prepare(cfg: RunConfig, *, backend: str | None = None) -> dict[str, Any]:
     ref, deformed = open_volume(cfg.volumes, "reference"), open_volume(cfg.volumes, "deformed")
     if ref.shape != deformed.shape:
         raise ValueError(f"reference {ref.shape} and deformed {deformed.shape} volumes differ in shape")
-    make_template(cfg.subvolume)
+    template = make_template(cfg.subvolume)
     store = points_store(cfg)
     if not is_store(cfg.points):
         roi = Path(cfg.points)
@@ -135,8 +135,9 @@ def prepare(cfg: RunConfig, *, backend: str | None = None) -> dict[str, Any]:
         rs = ResultStore(cfg.output, mode="r")
         if rs.dof != cfg.search.dof or tuple(rs.chunk_shape) != tuple(pc.chunk_shape):
             raise ValueError(f"{cfg.output} holds a run with other settings; remove it or choose another output")
+        rs.check_template(template.digest())
     else:
-        ResultStore.allocate(cfg.output, points=pc, dof=cfg.search.dof)
+        ResultStore.allocate(cfg.output, points=pc, dof=cfg.search.dof, template_digest=template.digest())
     info = _plan(cfg, backend=backend)
     log.info("prepared %s tiles, %s points", info["tiles"], info["points"])
     return info

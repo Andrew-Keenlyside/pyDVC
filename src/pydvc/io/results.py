@@ -85,8 +85,12 @@ class ResultStore:
         self.mode = mode
 
     @classmethod
-    def allocate(cls, path: str | Path, *, points: PointCloud, dof: int) -> ResultStore:
-        """Phase 1 (coordinator): create every array, declare presence deferred."""
+    def allocate(cls, path: str | Path, *, points: PointCloud, dof: int, template_digest: str | None = None) -> ResultStore:
+        """Phase 1 (coordinator): create every array, declare presence deferred.
+
+        ``template_digest`` (:meth:`pydvc.geometry.templates.Template.digest`) is recorded so
+        that a resumed or repaired run refuses to mix subvolume templates (:meth:`check_template`).
+        """
         attrs = {name: (dtype, dof if ncols is None else ncols) for name, (dtype, ncols) in RESULT_ATTRIBUTES.items()}
         allocate_store(path, bounds=points.bounds, chunk_shape=points.chunk_shape, bin_shape=points.bin_shape, attributes=attrs)
         meta = {
@@ -95,9 +99,22 @@ class ResultStore:
             "bin_shape": list(points.bin_shape),
             "points": str(Path(points.path).resolve()),
             "n_points": points.n_points,
+            "template_digest": template_digest,
         }
         _root_attrs(str(path), "r+")[_ATTR] = meta
         return cls(path, mode="r+")
+
+    def check_template(self, digest: str) -> None:
+        """Refuse to add results computed with another subvolume template than the ones already here."""
+        stored = self.meta.get("template_digest")
+        if stored is None:
+            import warnings
+
+            warnings.warn(f"{self.path} records no template digest (written before it was stored); "
+                          "cannot check that resumed results use the same subvolume template", stacklevel=2)
+        elif stored != digest:
+            raise ValueError(f"{self.path} holds results for subvolume template {stored}, not {digest}: the "
+                             "subvolume settings or pyDVC's template changed; remove it or choose another output")
 
     def write_tile(self, tile: TilePoints, results: dict[str, Any]) -> None:
         """Phase 2 (worker): write one tile's cells. ``results`` maps attribute name to (N, cols) arrays in tile row order."""
