@@ -45,6 +45,35 @@ ZENODO_API = f"https://zenodo.org/api/records/{ZENODO_RECORD}"
 CCPI_REPO = "TomographicImaging/DigitalVolumeCorrelation"
 CCPI_FILES = ("dvc_test/dvc_input.txt", "dvc_test/central_grid.roi", "dvc_test/central_grid_results/completed_central_grid.disp")
 SHAPE_ZYX = (1260, 1257, 1520)
+# Region of the sample covered by CCPi's central grid in x and y, extended through z with margins
+# for an 80-voxel subvolume and the case's ~34-voxel rigid offset (x, y, z; inclusive).
+GRID_BOX = ((50.0, 212.0, 150.0), (1474.0, 1028.0, 1110.0))
+
+
+def grid_points(spacing: float, box: tuple = GRID_BOX) -> tuple[np.ndarray, np.ndarray]:
+    """``(point_id, xyz)`` of a regular 3D grid over ``box``; the point nearest the centre comes first.
+
+    CCPi and the wavefront start from the first point, so a central start keeps shells compact.
+    """
+    lo, hi = np.asarray(box[0], dtype=np.float64), np.asarray(box[1], dtype=np.float64)
+    axes = [np.arange(a, b + 1e-9, spacing) for a, b in zip(lo, hi)]
+    xyz = np.stack(np.meshgrid(*axes, indexing="ij"), -1).reshape(-1, 3)
+    c = int(np.argmin(np.linalg.norm(xyz - (lo + hi) / 2, axis=1)))
+    xyz[[0, c]] = xyz[[c, 0]]
+    return np.arange(1, len(xyz) + 1, dtype=np.int64), xyz
+
+
+def data_dir(arg: str | Path | None = None) -> Path | None:
+    """The case A data directory: ``arg``, else ``$PYDVC_CASE_A``; None if neither holds the volumes."""
+    for cand in (arg, os.environ.get("PYDVC_CASE_A")):
+        if cand and len(list(Path(cand).glob("*.npy"))) >= 2 and (Path(cand) / "dvc_input.txt").exists():
+            return Path(cand)
+    return None
+
+
+def cache_dir(arg: str | Path | None = None) -> Path:
+    """Where C-ordered ``.raw`` copies of the volumes are kept: ``arg``, ``$PYDVC_CASE_A_CACHE`` or ``runs/case_A``."""
+    return Path(arg or os.environ.get("PYDVC_CASE_A_CACHE") or "runs/case_A")
 
 
 def _download(url: str, dest: Path, *, md5: str | None = None, chunk: int = 1 << 24) -> None:
