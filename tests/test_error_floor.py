@@ -38,3 +38,20 @@ def test_crop_is_chosen_inside_the_material():
     vol[40:90, 30:80, 10:60] = 200                                  # a bright block: the crop should land in it
     z, y, x = ef.choose_crop(vol, vol.shape, 32, stride=4)
     assert 40 <= z <= 58 and 30 <= y <= 48 and 10 <= x <= 28
+
+
+def test_seed_repeatability_reports_the_spread_between_sample_sets(tmp_path):
+    from pydvc.config import RunConfig, SearchSpec, SubvolumeSpec
+    from pydvc.pipeline.inmemory import load_points
+    from pydvc.synth.phantoms import default_field, make_case
+
+    shape = (64, 64, 64)
+    cfg = RunConfig.from_yaml(make_case(tmp_path / "c", shape_zyx=shape, field=default_field("affine", shape), spacing=12.0,
+                                        chunk=32, shard=64, noise_sigma=0.02,
+                                        subvolume=SubvolumeSpec(geometry="sphere", size=16, n_samples=300),
+                                        search=SearchSpec(dof=6, disp_max=6.0)))
+    pid, xyz = load_points(cfg)
+    rep = ef.seed_repeatability(cfg, pid, xyz, seeds=(0, 1), backend="numpy32", progress=lambda m: None)
+    [pair] = rep["pairs"]
+    assert pair["seeds"] == [0, 1] and pair["n_good_both"] > 0.9 * len(pid)
+    assert 0 < pair["median_abs"] < 0.2 and rep["per_estimate_std"] > 0

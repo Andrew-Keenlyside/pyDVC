@@ -27,6 +27,12 @@ For each case: bias (mean error per axis), random error (standard deviation
 per axis), RMSE, fraction GOOD, and iterations. A sanity check correlates the
 crop with itself (displacement must be 0).
 
+Shifted copies of one image have no deformation inside a subvolume and share
+the scan's noise, so they bound only part of the error. The **seed
+repeatability** test solves the real pair (CCPi's central grid) several times,
+changing only the template's random seed, and reports the spread: the
+uncertainty that comes from which sample points each subvolume uses.
+
 Command line (about 20-40 min on a GPU)::
 
     python -m pydvc.bench.error_floor --case-a runs/case_A_data --out runs/error_floor
@@ -223,6 +229,40 @@ def run(image: np.ndarray, *, out: Path, backend: str, shifts=SHIFTS, directions
             "cases": results}
 
 
+# --------------------------------------------------------------------------- repeatability on the real pair
+
+
+def seed_repeatability(cfg: Any, point_id: np.ndarray, xyz: np.ndarray, *, seeds=(0, 1, 2), backend: str = "fused",
+                       progress=print) -> dict[str, Any]:
+    """Spread between solves of the real pair that differ only in the template's random seed.
+
+    Each seed draws a different set of sample points in every subvolume. On real
+    data, with deformation that is not rigid within a subvolume and two
+    independent acquisitions, the result depends on that set; this is the
+    uncertainty the shifted-image cases above cannot see. It is also the
+    disagreement to expect with CCPi, which draws its own sample set.
+    """
+    from pydvc.pipeline.inmemory import solve_in_memory
+
+    runs = {}
+    for seed in seeds:
+        c = dataclasses.replace(cfg, subvolume=dataclasses.replace(cfg.subvolume, seed=seed))
+        runs[seed] = solve_in_memory(c, point_id, xyz, backend=backend)
+    pairs = []
+    for a, b in itertools.combinations(seeds, 2):
+        ra, rb = runs[a], runs[b]
+        good = (ra.status == 0) & (rb.status == 0)
+        e = ra.params[good, :3].astype(np.float64) - rb.params[good, :3]
+        mag = np.linalg.norm(e, axis=1)
+        pairs.append({"seeds": [a, b], "n_good_both": int(good.sum()), "mean": e.mean(axis=0).tolist(),
+                      "std": e.std(axis=0, ddof=1).tolist(), "median_abs": float(np.median(mag)),
+                      "p95_abs": float(np.percentile(mag, 95))})
+        progress(f"seeds {a} vs {b}: median |du| {pairs[-1]['median_abs']:.4f}, p95 {pairs[-1]['p95_abs']:.4f}")
+    per_axis = float(np.mean([np.mean(p["std"]) for p in pairs]) / np.sqrt(2.0))
+    return {"n_points": int(len(point_id)), "pairs": pairs, "per_estimate_std": per_axis,
+            "settings": dataclasses.asdict(cfg.subvolume)}
+
+
 # --------------------------------------------------------------------------- report
 
 
@@ -283,6 +323,12 @@ def main(argv: list[str] | None = None) -> None:
     out = Path(args.out)
     report = run(image, out=out, backend=args.backend, workers=args.workers, **kw)
     report |= {"crop": crop, "environment": environment(), "summary": summary(report)}
+    from pydvc.pipeline.inmemory import load_points
+
+    cfg = ca.case_config(data, ca.cache_dir(args.cache))
+    pid, xyz = load_points(cfg)
+    report["seed_repeatability"] = seed_repeatability(cfg, pid, xyz, seeds=(0, 1) if args.quick else (0, 1, 2),
+                                                      backend=args.backend)
     (out / "coeffs.npy").unlink(missing_ok=True)
     (out / "error_floor.json").write_text(json.dumps(report, indent=1))
     print(json.dumps(report["summary"], indent=1))
