@@ -42,6 +42,8 @@ pass PYDVC_MACHINE      "${PYDVC_MACHINE:-$(hostname -s)-h100}"
 pass PATH               "/opt/venv/bin:/opt/nsight/bin:/usr/local/cuda/bin:/usr/local/bin:/usr/bin:/bin"
 pass PYTHONNOUSERSITE   "1"
 pass PYTHONUNBUFFERED   "1"
+pass LANG               "C.UTF-8"
+pass PYTHONUTF8         "1"
 
 bind="$TMPDIR"
 # Bind each directory and, when it is or sits under a symlink (a home-dir link into /SAN, say), its

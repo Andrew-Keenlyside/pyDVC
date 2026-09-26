@@ -162,12 +162,84 @@ def gpu_state() -> dict[str, Any]:
     except Exception:
         return state
     state["available"] = True
+    mine = _ancestors()
     state["other_processes"] = [line.strip() for line in apps.splitlines()
-                                if line.strip() and line.split(",")[0].strip() != str(os.getpid())]
+                                if line.strip() and line.split(",")[0].strip() not in mine]
     vals = [v.strip() for v in gpu.splitlines()[0].split(",")] if gpu.strip() else []
     if len(vals) == 4:
         state |= {"temperature_c": vals[0], "sm_clock_mhz": vals[1], "max_sm_clock_mhz": vals[2], "utilization_pct": vals[3]}
     return state
+
+
+def cuda_headers_finding(cupy: Any) -> Finding:
+    """CuPy's CUDA headers must be the same CUDA version as its NVRTC, or its CUB reductions fail to compile.
+
+    With a conda cupy used without activating the environment, CuPy falls back to a system CUDA whose
+    headers are older than the environment's NVRTC (``incomplete type "__nv_fp8_e8m0"``).
+    """
+    import importlib
+    import re
+
+    nvrtc = getattr(cupy.cuda, "nvrtc", None) or importlib.import_module("cupy.cuda.nvrtc")
+    cuda_path = nvrtc_cuda_include(cupy) or str(Path(str(cupy.cuda.get_cuda_path() or "")) / "include")
+    header = Path(cuda_path) / "cuda.h"
+    nv = nvrtc.getVersion()
+    m = re.search(r"#define\s+CUDA_VERSION\s+(\d+)", header.read_text(encoding="utf-8", errors="replace")) if header.exists() else None
+    if m is None:
+        return Finding("CuPy CUDA headers", "fail", f"no cuda.h in {cuda_path!r}, the CUDA include directory CuPy uses")
+    ver = int(m.group(1))
+    hdr = (ver // 1000, (ver % 1000) // 10)
+    if hdr != tuple(nv):
+        hint = " (conda: activate the environment, e.g. conda run -n <env> ...)" if os.environ.get("CONDA_EXE") else ""
+        return Finding("CuPy CUDA headers", "fail",
+                       f"headers at {cuda_path} are CUDA {hdr[0]}.{hdr[1]} but NVRTC is {nv[0]}.{nv[1]}{hint}")
+    return Finding("CuPy CUDA headers", "pass", f"CUDA {hdr[0]}.{hdr[1]} headers and NVRTC at {cuda_path}")
+
+
+def nvrtc_cuda_include(cupy: Any) -> str | None:
+    """The CUDA include directory CuPy actually passes to NVRTC, observed by compiling a throwaway kernel.
+
+    (CuPy decides it in compiled code, and it can differ from ``cupy.cuda.get_cuda_path()``.)
+    """
+    import uuid
+
+    from cupy.cuda import compiler
+
+    seen: list[tuple[str, ...]] = []
+    orig = compiler._NVRTCProgram.compile
+
+    def spy(self: Any, options: tuple[str, ...] = (), *a: Any, **k: Any) -> Any:
+        seen.append(tuple(options))
+        return orig(self, options, *a, **k)
+
+    compiler._NVRTCProgram.compile = spy
+    try:
+        src = f'extern "C" __global__ void pydvc_probe_{uuid.uuid4().hex}(float* x) {{ x[0] = 1.0f; }}'
+        cupy.RawModule(code=src).get_function(src.split("void ")[1].split("(")[0])
+    except Exception:
+        return None
+    finally:
+        compiler._NVRTCProgram.compile = orig
+    for opts in seen:
+        for o in opts:
+            d = o[2:] if o.startswith("-I") else None
+            if d and "cupy" not in d and (Path(d) / "cuda.h").exists():
+                return d
+    return None
+
+
+def _ancestors() -> set[str]:
+    """This process and its ancestors: a parent that holds a GPU context (a campaign driving the check) is not
+    another user of the GPU."""
+    pids, pid = set(), os.getpid()
+    while pid > 1 and str(pid) not in pids:
+        pids.add(str(pid))
+        try:
+            fields = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+            pid = int(fields[1])
+        except (OSError, IndexError, ValueError):
+            break
+    return pids
 
 
 def preflight(tier: str) -> tuple[list[Finding], dict[str, Any]]:
@@ -185,14 +257,7 @@ def preflight(tier: str) -> tuple[list[Finding], dict[str, Any]]:
         else:
             import cupy
 
-            prefix = os.environ.get("CONDA_PREFIX", "")
-            cuda_path = str(cupy.cuda.get_cuda_path() or "")
-            if prefix and cuda_path.startswith(prefix):
-                found.append(Finding("CuPy CUDA headers", "pass", cuda_path))
-            else:
-                found.append(Finding("CuPy CUDA headers", "fail",
-                                     f"CuPy uses {cuda_path!r}, outside CONDA_PREFIX={prefix!r}: activate the "
-                                     "environment (conda run -n <env> ...), or NVRTC mixes CUDA versions"))
+            found.append(cuda_headers_finding(cupy))
         if state["other_processes"]:
             found.append(Finding("GPU idle", "warn", "timings not compared; in use by " + "; ".join(state["other_processes"])))
     return found, state

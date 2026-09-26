@@ -40,6 +40,9 @@ From: @BASE_IMAGE@
     # A ~/.local site-packages from the host must not shadow the image.
     export PYTHONNOUSERSITE=1
     export PYTHONUNBUFFERED=1
+    # No locale in the image: without these, Python's default text encoding is ASCII.
+    export LANG=C.UTF-8
+    export PYTHONUTF8=1
 
 %post
     set -eu

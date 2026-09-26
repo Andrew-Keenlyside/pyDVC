@@ -86,3 +86,28 @@ def test_cpu_timings_are_skipped_when_other_work_loads_the_cpu():
     m = {"kernel.case_a.cpu.sums_us": {"value": 260.0}, "kernel.case_a.fused.sums_us": {"value": 4.1}}
     found = {f.metric: f.status for f in compare(m, base, same_hardware=True, gpu_busy=False, cpu_busy=True)}
     assert found == {"kernel.case_a.cpu.sums_us": "skip", "kernel.case_a.fused.sums_us": "pass"}
+
+
+def test_cuda_header_check_compares_headers_with_nvrtc(tmp_path, monkeypatch):
+    import types
+
+    from pydvc.bench.check import cuda_headers_finding
+
+    (tmp_path / "include").mkdir()
+    (tmp_path / "include" / "cuda.h").write_text("#define CUDA_VERSION 12040\n")
+    fake_nvrtc = types.SimpleNamespace(getVersion=lambda: (12, 9))
+    cupy = types.SimpleNamespace(cuda=types.SimpleNamespace(get_cuda_path=lambda: str(tmp_path), nvrtc=fake_nvrtc))
+    monkeypatch.setattr("pydvc.bench.check.nvrtc_cuda_include", lambda cp: str(tmp_path / "include"))
+    f = cuda_headers_finding(cupy)
+    assert f.status == "fail" and "12.4" in f.detail and "12.9" in f.detail
+    fake_nvrtc.getVersion = lambda: (12, 4)
+    assert cuda_headers_finding(cupy).status == "pass"
+
+
+def test_the_process_ancestry_includes_itself_and_its_parent():
+    import os
+
+    from pydvc.bench.check import _ancestors
+
+    a = _ancestors()
+    assert str(os.getpid()) in a and str(os.getppid()) in a
