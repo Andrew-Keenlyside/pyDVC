@@ -523,6 +523,8 @@ def run(tier: str, *, case_a: str | None = None, cache: str | None = None, machi
     if update_baseline:
         if result == "FAIL":
             say("not updating the baseline: the check failed")
+        elif state["other_processes"]:
+            say("not updating the baseline: other processes were using the GPU, so its timings are not representative")
         elif not reason:
             say("not updating the baseline: give --reason")
         else:
