@@ -95,18 +95,42 @@ class Finding:
 
 
 def repo_root() -> Path:
+    """The source tree whose tests run: the git checkout, else ``$PYDVC_SRC``, the container's copy, or cwd."""
     try:
         out = subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True, check=True)
         return Path(out.stdout.strip())
     except Exception:
+        for cand in (os.environ.get("PYDVC_SRC"), "/opt/pydvc-src"):
+            if cand and (Path(cand) / "tests").is_dir():
+                return Path(cand)
         return Path.cwd()
+
+
+def out_root(src: Path) -> Path:
+    """Where runs/check goes: ``$PYDVC_CHECK_OUT``, else the source tree if writable (a checkout), else cwd."""
+    env = os.environ.get("PYDVC_CHECK_OUT")
+    if env:
+        return Path(env)
+    return src if os.access(src, os.W_OK) else Path.cwd()
+
+
+def baseline_dir(src: Path) -> Path:
+    """``$PYDVC_BASELINE_DIR`` (e.g. shared storage on a cluster), else the checkout's docs/benchmarks/baselines."""
+    return Path(os.environ.get("PYDVC_BASELINE_DIR") or src / "docs" / "benchmarks" / "baselines")
 
 
 def git_info(root: Path) -> dict[str, Any]:
     def git(*a: str) -> str:
-        return subprocess.run(["git", *a], cwd=root, capture_output=True, text=True).stdout.strip()
+        try:
+            return subprocess.run(["git", *a], cwd=root, capture_output=True, text=True).stdout.strip()
+        except OSError:                          # no git (a container)
+            return ""
 
-    return {"sha": git("rev-parse", "HEAD"), "branch": git("rev-parse", "--abbrev-ref", "HEAD"),
+    sha = git("rev-parse", "HEAD")
+    if not sha:                                  # the container records the commit it was built from
+        commit = os.environ.get("PYDVC_COMMIT", "unknown")
+        return {"sha": commit.removesuffix("-dirty"), "branch": "", "dirty": commit.endswith("-dirty")}
+    return {"sha": sha, "branch": git("rev-parse", "--abbrev-ref", "HEAD"),
             "dirty": bool(git("status", "--porcelain", "--untracked-files=no"))}
 
 
@@ -434,19 +458,21 @@ def bitwise_findings(steps: list[Step], baseline: dict[str, Any] | None, same_so
 
 
 def baseline_path(root: Path, machine: str) -> Path:
-    return root / "docs" / "benchmarks" / "baselines" / f"{machine}.json"
+    return baseline_dir(root) / f"{machine}.json"
 
 
 def write_baseline(root: Path, machine: str, report: dict[str, Any], steps: list[Step], reason: str,
-                   ccpi_disp: str | None) -> Path:
-    store = root / "runs" / "check" / "baseline"
+                   ccpi_disp: str | None, out: Path | None = None) -> Path:
+    """Baseline JSON in :func:`baseline_dir`; its arrays under ``out``/runs/check/baseline, paths relative to ``out``."""
+    out = out or root
+    store = out / "runs" / "check" / "baseline"
     store.mkdir(parents=True, exist_ok=True)
     arrays = {}
     for s in steps:
         for name, path in s.arrays.items():
             dest = store / Path(path).name
             shutil.copyfile(path, dest)
-            arrays[name] = {"path": str(dest.relative_to(root)), "sha256": sha256(dest)}
+            arrays[name] = {"path": str(dest.relative_to(out)), "sha256": sha256(dest)}
     metrics = {k: v for s in steps for k, v in s.metrics.items()}
     doc = {"machine": machine, "recorded": report["started"], "reason": reason, "git": report["git"],
            "tier": report["tier"], "fingerprint": report["fingerprint"], "metrics": metrics, "arrays": arrays,
@@ -457,15 +483,16 @@ def write_baseline(root: Path, machine: str, report: dict[str, Any], steps: list
     return path
 
 
-def load_baseline(root: Path, machine: str) -> dict[str, Any] | None:
+def load_baseline(root: Path, machine: str, out: Path | None = None) -> dict[str, Any] | None:
+    out = out or root
     path = baseline_path(root, machine)
     if not path.exists():
         return None
     doc = json.loads(path.read_text())
-    for a in doc.get("arrays", {}).values():             # stored relative to the repository
-        a["path"] = str(root / a["path"])
+    for a in doc.get("arrays", {}).values():             # stored relative to the output root
+        a["path"] = str(out / a["path"])
     if doc.get("ccpi_disp") and not Path(doc["ccpi_disp"]).is_absolute():
-        doc["ccpi_disp"] = str(root / doc["ccpi_disp"])
+        doc["ccpi_disp"] = str(out / doc["ccpi_disp"])
     return doc
 
 
@@ -478,19 +505,20 @@ def run(tier: str, *, case_a: str | None = None, cache: str | None = None, machi
     from pydvc.bench import case_a as ca
 
     root = repo_root()
+    out = out_root(root)
     machine = machine or os.environ.get("PYDVC_MACHINE") or socket.gethostname()
     git = git_info(root)
     started = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    run_dir = root / "runs" / "check" / f"{started}-{git['sha'][:7]}{'-dirty' if git['dirty'] else ''}"
+    run_dir = out / "runs" / "check" / f"{started}-{git['sha'][:7]}{'-dirty' if git['dirty'] else ''}"
     run_dir.mkdir(parents=True, exist_ok=True)
-    latest = root / "runs" / "check" / "latest"
+    latest = out / "runs" / "check" / "latest"
     if latest.is_symlink() or latest.exists():
         latest.unlink()
     latest.symlink_to(run_dir.name)
 
     data = ca.data_dir(case_a)
     cache_dir = ca.cache_dir(cache)
-    baseline = load_baseline(root, machine)
+    baseline = load_baseline(root, machine, out)
     pre, state = preflight(tier)
     fp = fingerprint()
     report: dict[str, Any] = {"tier": tier, "machine": machine, "started": started, "git": git, "fingerprint": fp,
@@ -541,7 +569,7 @@ def run(tier: str, *, case_a: str | None = None, cache: str | None = None, machi
         elif not reason:
             say("not updating the baseline: give --reason")
         else:
-            path = write_baseline(root, machine, report, steps, reason, ccpi_disp)
+            path = write_baseline(root, machine, report, steps, reason, ccpi_disp, out)
             report["baseline_written"] = str(path)
             say(f"baseline written: {path}")
     (run_dir / "check.json").write_text(json.dumps(report, indent=1, default=str))
