@@ -26,6 +26,7 @@ optional ``results.disp``.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import time
@@ -242,8 +243,13 @@ def run(
     backend: str | None = None,
     devices: tuple[int, ...] | None = None,
     cpu_workers: int = 1,
+    max_tiles: int | None = None,
 ) -> list[Any]:
     """Solve this node's unwritten tiles: one process per GPU (or ``cpu_workers`` CPU processes).
+
+    ``max_tiles`` solves only the first tiles of this node's share (short profiling runs).
+    Every run logs per-tile events and, on GPUs, 1 Hz telemetry under
+    ``<workdir>/events/<run id>/`` (:mod:`pydvc.profiling`).
 
     Resubmitting after a time-out, a node failure or a killed worker solves
     only the tiles still missing. Tiles that failed twice are listed in
@@ -259,13 +265,22 @@ def run(
     plan_path = workdir / "plan.json"
     if not plan_path.exists():
         raise FileNotFoundError(f"{plan_path}: run `pydvc plan` first")
+    from pydvc.profiling import GpuTelemetry, events_dir, new_run_id
+    from pydvc.solver.engines import on_device
+
     info = node_info()
+    run_id = new_run_id()
+    ev_dir = events_dir(workdir, run_id)
+    ids = node_share(plan_path, info)[:max_tiles] if max_tiles else None
     t0 = time.perf_counter()
-    stats = launch_local(cfg, backend=backend, devices=devices, cpu_workers=cpu_workers)
+    with GpuTelemetry(ev_dir / "gpu_telemetry.csv") if on_device(backend) else contextlib.nullcontext():
+        stats = launch_local(cfg, backend=backend, devices=devices, cpu_workers=cpu_workers, tile_ids=ids)
     seconds = time.perf_counter() - t0
     tiles, _ = load_plan(plan_path)
     mine = set(node_share(plan_path, info))
     written = ResultStore(cfg.output).written_cells()
+    if max_tiles:
+        mine &= set(ids)
     missing = [t.id for t in tiles if t.id in mine and not written.issuperset(t.cells)]
     errors = [e for s in stats for e in s.errors]
     suffix = f".node{info.node_rank}" if info.n_nodes > 1 else ""
@@ -277,6 +292,7 @@ def run(
         failed_path.unlink()
     (workdir / f"run_stats{suffix}.json").write_text(json.dumps(
         {"seconds": seconds, "backend": backend, "node": asdict(info), "missing_tiles": missing,
+         "run_id": run_id, "events": str(ev_dir),
          "workers": [asdict(s) for s in stats]}, indent=1, default=str))
     return stats
 

@@ -67,7 +67,8 @@ def cmd_run(args: argparse.Namespace) -> None:
     from pydvc.pipeline import coordinator
 
     devices = tuple(args.devices) if args.devices else None
-    for st in coordinator.run(_cfg(args), backend=args.backend, devices=devices, cpu_workers=args.cpu_workers):
+    for st in coordinator.run(_cfg(args), backend=args.backend, devices=devices, cpu_workers=args.cpu_workers,
+                              max_tiles=getattr(args, "max_tiles", None)):
         busy = st.seconds_compute + st.seconds_io_wait
         wait = f"{100 * st.seconds_io_wait / busy:.1f} %" if busy else "n/a"
         print(f"device {st.device}: {st.tiles} tiles solved, {st.tiles_skipped} already written, {st.points} points, "
@@ -186,6 +187,8 @@ def build_parser() -> argparse.ArgumentParser:
         if name == "run":
             s.add_argument("--devices", type=int, nargs="+", help="GPU ordinals (default: every visible GPU)")
             s.add_argument("--cpu-workers", type=int, default=1, help="CPU backends: worker processes sharing the cores")
+            if name == "run":
+                s.add_argument("--max-tiles", type=int, help="solve only the first N tiles (short profiling runs)")
         s.set_defaults(func=func)
 
     s = sub.add_parser("finalize", help="rebuild presence, write metadata and summaries")
