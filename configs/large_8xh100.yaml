@@ -4,6 +4,7 @@ volumes:
   reference: /lustre/project/scan/t00.ome.zarr
   deformed: /lustre/project/scan/t01.ome.zarr
   array_path: "0"
+  prefilter_sigma: 1.0      # Gaussian low-pass before correlating; removes most interpolation bias (docs/benchmarks/2026-09-26-error-floor-case-A.md)
 points: /lustre/project/dvc/points_s16.zarrvectors      # chunk_shape 256^3 voxels; tiles are 4^3 chunks
 output: /lustre/project/dvc/t00_t01.zarrvectors
 workdir: /lustre/project/dvc/runs/t00_t01

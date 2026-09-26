@@ -126,6 +126,7 @@ class TileWorker:
         self.results = ResultStore(cfg.output, mode="r+")
         self.template = make_template(cfg.subvolume)
         self.results.check_template(self.template.digest())
+        self.results.check_prefilter(cfg.volumes.prefilter_sigma)
         self.engine = make_engine(self.backend)
         self.seed_field = load_seed_field(seed_field_path)
 

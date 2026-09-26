@@ -141,3 +141,11 @@ def test_the_worker_refuses_a_store_written_with_another_template(case):
     attrs[_ATTR] = {**attrs[_ATTR], "template_digest": "0" * 16}
     with pytest.raises(ValueError, match="subvolume template"):
         TileWorker(cfg, backend=_backend())
+
+
+def test_a_changed_prefilter_cannot_be_mixed_into_existing_results(case):
+    cfg = _variant(case, "prefilter", seeding=SeedingSpec(strategy="rigid"))
+    coordinator.prepare(cfg, backend=_backend())
+    changed = dataclasses.replace(cfg, volumes=dataclasses.replace(cfg.volumes, prefilter_sigma=1.0))
+    with pytest.raises(ValueError, match="prefiltered"):
+        coordinator.prepare(changed, backend=_backend())

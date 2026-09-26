@@ -142,6 +142,49 @@ different seed disagrees with itself exactly as much as it disagrees with CCPi
 case A comparison's median criterion (0.05) therefore cannot be met by pyDVC
 against itself at 8 000 samples; the criterion should be revised (see below).
 
+## 4. Reducing the bias
+
+**CCPi's interpolation is not an alternative: it is the same interpolant.**
+CCPi's Lekien–Marsden tricubic is fed central-difference derivatives
+(`Matrix_4d.h`: `(f₊₁ − f₋₁)/2` and the tensor-product cross terms), and a
+tricubic Hermite built from exactly those is separable Catmull-Rom, which
+pyDVC evaluates directly. The real pair confirms it: binned by the fractional
+part of the displacement, the mean pyDVC − CCPi difference is flat (all bins
+within −0.004 to +0.0003 voxel on every axis), where a different interpolant
+would trace an S-curve of ±0.03.
+
+**A Gaussian prefilter removes most of it.** Low-pass filtering both images
+(Pan 2013, *Optics and Lasers in Engineering*) removes the fine-scale
+content that interpolation handles unevenly. Same shift test (sphere 80,
+8 000 samples, one-sided, x), and the sample-set uncertainty of section 3
+measured on the real pair:
+
+| prefilter σ (voxel) | max bias | max slope (worst strain error) | sample-set uncertainty |
+|---|---|---|---|
+| none | 0.030 | 0.19 (19 %) | 0.031 |
+| 0.7 | 0.0022 | 0.014 (1.4 %) | 0.026 |
+| 1.0 | 0.0005 | 0.003 (0.3 %) | 0.025 |
+
+On this scan the filter costs no precision: the random error falls too,
+because it removes scan-to-scan noise that differs between the two
+acquisitions. On data whose texture is at the voxel scale, filtering removes
+information and raises random error, so σ should be chosen from this study
+on each dataset.
+
+**Storage.** A blurred u8 volume rounded back to u8 is as good as float32
+(σ = 1: max bias 0.0004 for float32, 16-bit and 8-bit; slope 0.0023,
+0.0023, 0.0034; sample-set uncertainty 0.0248 for all three). pyDVC
+therefore keeps the volume's dtype: no extra memory, and u8 volumes keep the
+packed loads.
+
+**In pyDVC:** `volumes.prefilter_sigma` (default 0, CCPi parity). Bricks are
+read with a 4σ margin, filtered and cropped, so tiles meet without seams; the
+filter runs on the GPU in z-slabs. On case A, σ = 1 takes 5.9 s per 2.4 GB
+volume, and the central grid's result shifts by ≤ 0.003 voxel on average,
+with statuses unchanged and sample-set uncertainty 0.032 → 0.025 in the full
+wavefront run. Results stores record σ; a resumed run with another σ is
+refused. `pydvc check full` includes a prefiltered central-grid step.
+
 ## Consequences
 
 * **For users.** On data like this, precision is set by the sample count.
@@ -158,6 +201,5 @@ against itself at 8 000 samples; the criterion should be revised (see below).
   out. Its slope reaches ~0.19 voxel of bias per voxel of fractional
   displacement (between 0.5 and 0.6 above). Strain is the gradient of
   displacement, so where the fractional displacement varies across a region
-  the bias adds up to ~20 % of the local strain. This is the first accuracy
-  item for strain (M5): a flatter interpolant, or correcting the bias from
-  this calibration.
+  the bias adds up to ~20 % of the local strain. With a 1-voxel prefilter
+  (section 4) this falls to ~0.3 %; use one for strain on data like this.

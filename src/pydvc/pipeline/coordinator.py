@@ -136,8 +136,10 @@ def prepare(cfg: RunConfig, *, backend: str | None = None) -> dict[str, Any]:
         if rs.dof != cfg.search.dof or tuple(rs.chunk_shape) != tuple(pc.chunk_shape):
             raise ValueError(f"{cfg.output} holds a run with other settings; remove it or choose another output")
         rs.check_template(template.digest())
+        rs.check_prefilter(cfg.volumes.prefilter_sigma)
     else:
-        ResultStore.allocate(cfg.output, points=pc, dof=cfg.search.dof, template_digest=template.digest())
+        ResultStore.allocate(cfg.output, points=pc, dof=cfg.search.dof, template_digest=template.digest(),
+                             prefilter_sigma=cfg.volumes.prefilter_sigma)
     info = _plan(cfg, backend=backend)
     log.info("prepared %s tiles, %s points", info["tiles"], info["points"])
     return info

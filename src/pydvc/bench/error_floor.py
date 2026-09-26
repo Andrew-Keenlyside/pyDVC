@@ -313,11 +313,20 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--backend", default="fused" if gpu_available() else "cpu")
     p.add_argument("--workers", type=int, default=16, help="processes for the shifted images")
     p.add_argument("--quick", action="store_true", help="a few cases only (smoke test)")
+    p.add_argument("--prefilter-sigma", type=float, default=0.0,
+                   help="Gaussian prefilter (voxels) on both images, as volumes.prefilter_sigma applies it")
     args = p.parse_args(argv)
     data = ca.data_dir(args.case_a)
     if data is None:
         raise SystemExit("case A data not found: pass --case-a DIR or set PYDVC_CASE_A")
     image, crop = case_a_crop(data, ca.cache_dir(args.cache), args.crop)
+    if args.prefilter_sigma:                     # a blur commutes with the shifts, so filtering the crop once is exact
+        from scipy.ndimage import gaussian_filter
+
+        from pydvc.io.volume import TRUNCATE
+
+        image = gaussian_filter(image, args.prefilter_sigma, mode="nearest", truncate=TRUNCATE)
+        crop["prefilter_sigma"] = args.prefilter_sigma
     kw = dict(shifts=(0.0, 0.5, 1.0), variants=("symmetric",), noise_factors=(0.0, 1.0), sizes=(80.0,),
               n_samples=(8000,)) if args.quick else {}
     out = Path(args.out)
@@ -326,6 +335,8 @@ def main(argv: list[str] | None = None) -> None:
     from pydvc.pipeline.inmemory import load_points
 
     cfg = ca.case_config(data, ca.cache_dir(args.cache))
+    if args.prefilter_sigma:
+        cfg = dataclasses.replace(cfg, volumes=dataclasses.replace(cfg.volumes, prefilter_sigma=args.prefilter_sigma))
     pid, xyz = load_points(cfg)
     report["seed_repeatability"] = seed_repeatability(cfg, pid, xyz, seeds=(0, 1) if args.quick else (0, 1, 2),
                                                       backend=args.backend)

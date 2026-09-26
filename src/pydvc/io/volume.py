@@ -210,11 +210,84 @@ def is_zarr_uri(uri: str | Path) -> bool:
 
 
 def open_volume(spec: VolumeSpec, which: Literal["reference", "deformed"]) -> VolumeSource:
-    """Pick ``ZarrVolume`` or ``RawVolume`` from the URI."""
+    """Pick ``ZarrVolume`` or ``RawVolume`` from the URI; wrapped in :class:`FilteredVolume` if ``prefilter_sigma``."""
     uri = getattr(spec, which)
     if is_zarr_uri(uri):
-        return ZarrVolume(uri, spec.array_path)
-    return RawVolume(uri, shape_xyz=spec.raw_shape_xyz, dtype=spec.raw_dtype, header_bytes=spec.raw_header_bytes)
+        vol: Any = ZarrVolume(uri, spec.array_path)
+    else:
+        vol = RawVolume(uri, shape_xyz=spec.raw_shape_xyz, dtype=spec.raw_dtype, header_bytes=spec.raw_header_bytes)
+    return FilteredVolume(vol, spec.prefilter_sigma) if spec.prefilter_sigma > 0 else vol
+
+
+TRUNCATE = 4.0          # Gaussian kernel radius, in sigmas
+
+
+class FilteredVolume:
+    """A volume seen through a Gaussian low-pass of ``sigma`` voxels.
+
+    Each brick is read with a margin of the kernel's radius, filtered and cropped,
+    so a brick equals the same box of the filtered whole volume: tiles meet
+    without seams, and the in-memory and tiled runs see the same data. Outside
+    the volume, voxels are edge-padded before filtering, as ``read_brick`` pads.
+    Filtering runs on the GPU when cupy has a device (in z-slabs, so a host
+    brick of any size fits), else on the host. The result keeps the volume's
+    dtype (rounded to the nearest level), so bricks cost the same memory and
+    u8 volumes keep the kernels' packed loads.
+    """
+
+    SLAB = 64            # z-slices filtered at a time on the GPU
+
+    def __init__(self, inner: Any, sigma: float) -> None:
+        self.inner, self.sigma = inner, float(sigma)
+        self.shape, self.dtype = inner.shape, np.dtype(inner.dtype)
+        self.array = inner.array             # unfiltered; for tools that inspect the raw data
+        self.margin = int(math.ceil(TRUNCATE * self.sigma))
+
+    def read_brick(self, box: Box, *, device: Device = "cuda", stream: Any = None) -> Brick:
+        m = self.margin
+        grown = self.inner.read_brick(box.grow(m), device=device, stream=stream)
+        data = gaussian_filtered(grown.data, self.sigma, self.dtype)
+        inner = tuple(slice(m, n - m) for n in data.shape)
+        return Brick(data=data[inner], box=box, valid=box.intersect(Box((0, 0, 0), self.shape)) or box)
+
+
+def gaussian_filtered(data: Any, sigma: float, dtype: Any, slab: int = FilteredVolume.SLAB) -> Any:
+    """``data`` filtered with a Gaussian of ``sigma`` voxels (radius 4 sigma), as ``dtype``, on data's device.
+
+    Host data is filtered slab by slab on the GPU when one is available.
+    """
+    dtype = np.dtype(dtype)
+    on_device = hasattr(type(data), "__cuda_array_interface__")
+    try:
+        cp = get_xp("cuda")
+        from cupyx.scipy.ndimage import gaussian_filter as gf_gpu
+    except Exception:
+        cp = None
+    if cp is None:
+        from scipy.ndimage import gaussian_filter
+
+        return _to_levels(gaussian_filter(np.asarray(data, dtype=np.float32), sigma, mode="nearest", truncate=TRUNCATE), dtype, np)
+    xp = cp if on_device else np
+    out = xp.empty(data.shape, dtype=dtype)
+    r = int(math.ceil(TRUNCATE * sigma))
+    nz = data.shape[0]
+    for z0 in range(0, nz, slab):
+        z1 = min(z0 + slab, nz)
+        lo, hi = max(z0 - r, 0), min(z1 + r, nz)
+        part = cp.asarray(data[lo:hi], dtype=cp.float32)
+        if lo > z0 - r or hi < z1 + r:          # edge-pad in z like the whole-array filter would
+            part = cp.pad(part, ((lo - (z0 - r), (z1 + r) - hi), (0, 0), (0, 0)), mode="edge")
+        f = gf_gpu(part, sigma, mode="nearest", truncate=TRUNCATE)[r:r + (z1 - z0)]
+        f = _to_levels(f, dtype, cp)
+        out[z0:z1] = f if on_device else cp.asnumpy(f)
+    return out
+
+
+def _to_levels(f: Any, dtype: np.dtype, xp: Any) -> Any:
+    if dtype.kind in "ui":
+        info = np.iinfo(dtype)
+        return xp.clip(xp.rint(f), info.min, info.max).astype(dtype)
+    return f.astype(dtype)
 
 
 def iter_blocks(shape_zyx: tuple[int, int, int], block: tuple[int, int, int]) -> Iterator[Box]:

@@ -85,7 +85,8 @@ class ResultStore:
         self.mode = mode
 
     @classmethod
-    def allocate(cls, path: str | Path, *, points: PointCloud, dof: int, template_digest: str | None = None) -> ResultStore:
+    def allocate(cls, path: str | Path, *, points: PointCloud, dof: int, template_digest: str | None = None,
+                 prefilter_sigma: float = 0.0) -> ResultStore:
         """Phase 1 (coordinator): create every array, declare presence deferred.
 
         ``template_digest`` (:meth:`pydvc.geometry.templates.Template.digest`) is recorded so
@@ -100,6 +101,7 @@ class ResultStore:
             "points": str(Path(points.path).resolve()),
             "n_points": points.n_points,
             "template_digest": template_digest,
+            "prefilter_sigma": float(prefilter_sigma),
         }
         _root_attrs(str(path), "r+")[_ATTR] = meta
         return cls(path, mode="r+")
@@ -115,6 +117,13 @@ class ResultStore:
         elif stored != digest:
             raise ValueError(f"{self.path} holds results for subvolume template {stored}, not {digest}: the "
                              "subvolume settings or pyDVC's template changed; remove it or choose another output")
+
+    def check_prefilter(self, sigma: float) -> None:
+        """Refuse to add results computed from differently filtered volumes (``volumes.prefilter_sigma``)."""
+        stored = float(self.meta.get("prefilter_sigma", 0.0))
+        if abs(stored - float(sigma)) > 1e-9:
+            raise ValueError(f"{self.path} holds results for volumes prefiltered with sigma {stored:g}, not {float(sigma):g}; "
+                             "remove it or choose another output")
 
     def write_tile(self, tile: TilePoints, results: dict[str, Any]) -> None:
         """Phase 2 (worker): write one tile's cells. ``results`` maps attribute name to (N, cols) arrays in tile row order."""

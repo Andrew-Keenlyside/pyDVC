@@ -9,9 +9,9 @@ tier   runs                                                            time
 quick  the test suite without GPU and slow tests (the CUDA emulator    ~3 min
        included)
 gpu    ``-m gpu`` tests and ``pydvc selftest``                          ~5 min
-full   ``-m slow`` tests; the kernel benchmark and, with case A data,  ~15 min
-       the central grid (4 680 points) on fused and cpu, and an 86 k
-       point 3D grid on fused
+full   ``-m slow`` tests; the kernel benchmark and, with case A data,  ~5 min
+       the central grid (4 680 points) on fused and cpu, again on fused
+       with a 1-voxel prefilter, and an 86 k point 3D grid on fused
 =====  ==============================================================  =========
 
 Results go to ``runs/check/<UTC time>-<commit>[-dirty]/check.json`` (and
@@ -252,8 +252,8 @@ def kernel_step(case_a: Path | None, cache: Path, run_dir: Path) -> Step:
 
 
 def casea_step(case_a: Path | None, cache: Path, run_dir: Path, baseline: dict[str, Any] | None,
-               ccpi_disp: str | None = None) -> Step:
-    """The central grid (CCPi's 4 680 points, wavefront, in memory) on fused and cpu."""
+               ccpi_disp: str | None = None, *, prefilter_sigma: float = 0.0) -> Step:
+    """The central grid (CCPi's 4 680 points, wavefront, in memory) on fused and cpu; fused only when prefiltered."""
 
     def go(step: Step) -> None:
         from pydvc.bench.case_a import case_config
@@ -265,32 +265,37 @@ def casea_step(case_a: Path | None, cache: Path, run_dir: Path, baseline: dict[s
             step.status, step.detail = "skip", "no case A data (--case-a or $PYDVC_CASE_A)"
             return
         cfg = case_config(case_a, cache)
+        tag = "casea" if not prefilter_sigma else f"casea_pf{prefilter_sigma:g}"
+        if prefilter_sigma:
+            cfg = dataclasses.replace(cfg, volumes=dataclasses.replace(cfg.volumes, prefilter_sigma=prefilter_sigma))
         pid, xyz = load_points(cfg)
         ccpi = _ccpi_reference(case_a, baseline, ccpi_disp)
-        for b in (["fused"] if gpu_available() else []) + ["cpu"]:
+        backends = (["fused"] if gpu_available() else []) + ([] if prefilter_sigma else ["cpu"])
+        for b in backends:
             solve_in_memory(cfg, pid[:64], xyz[:64], backend=b, strategy="rigid")        # compile outside the timing
             t0 = time.perf_counter()
             r = solve_in_memory(cfg, pid, xyz, backend=b)
-            step.metrics[f"casea.{b}.seconds"] = {"value": time.perf_counter() - t0}
-            path = run_dir / f"casea_{b}.npz"
+            step.metrics[f"{tag}.{b}.seconds"] = {"value": time.perf_counter() - t0}
+            path = run_dir / f"{tag}_{b}.npz"
             np.savez(path, point_id=r.point_id, xyz=r.xyz, status=r.status, objmin=r.objmin,
                      displacement=r.params[:, :3].astype(np.float64), params=r.params, n_iter=r.n_iter)
-            step.arrays[f"casea.{b}"] = str(path)
+            step.arrays[f"{tag}.{b}"] = str(path)
             ref = load_results(ccpi)
             common, ia, ib = np.intersect1d(r.point_id, ref["point_id"], return_indices=True)
             acc = compare_arrays(r.params[ia, :3], ref["displacement"][ib], r.status[ia], ref_status=ref["status"][ib])
-            step.metrics[f"casea.{b}.ccpi.median"] = {"value": acc.median_abs}
-            step.metrics[f"casea.{b}.ccpi.p95"] = {"value": acc.p95_abs}
-            step.metrics[f"casea.{b}.ccpi.status_agreement"] = {"value": acc.status_agreement}
-            step.detail += (f"{b}: {step.metrics[f'casea.{b}.seconds']['value']:.1f} s, vs CCPi ({len(common)} pts, "
+            step.metrics[f"{tag}.{b}.ccpi.median"] = {"value": acc.median_abs}
+            step.metrics[f"{tag}.{b}.ccpi.p95"] = {"value": acc.p95_abs}
+            step.metrics[f"{tag}.{b}.ccpi.status_agreement"] = {"value": acc.status_agreement}
+            step.detail += (f"{b}: {step.metrics[f'{tag}.{b}.seconds']['value']:.1f} s, vs CCPi ({len(common)} pts, "
                             f"{ccpi.name}) median {acc.median_abs:.4f}; ")
-            if baseline and f"casea.{b}" in baseline.get("arrays", {}):
-                verdict = compare_with_baseline_arrays(path, Path(baseline["arrays"][f"casea.{b}"]["path"]))
+            if baseline and f"{tag}.{b}" in baseline.get("arrays", {}):
+                verdict = compare_with_baseline_arrays(path, Path(baseline["arrays"][f"{tag}.{b}"]["path"]))
                 step.detail += verdict.detail + "; "
                 if verdict.status == "fail":
                     step.status = "fail"
 
-    return _timed(go, Step("case A central grid"))
+    name = "case A central grid" + (f" (prefilter sigma {prefilter_sigma:g}, fused)" if prefilter_sigma else "")
+    return _timed(go, Step(name))
 
 
 def _ccpi_reference(case_a: Path, baseline: dict[str, Any] | None, explicit: str | None = None) -> Path:
@@ -497,6 +502,7 @@ def run(tier: str, *, case_a: str | None = None, cache: str | None = None, machi
             plan += [lambda: pytest_step("tests (slow)", "slow", run_dir, root),
                      lambda: kernel_step(data, cache_dir, run_dir),
                      lambda: casea_step(data, cache_dir, run_dir, baseline, ccpi_disp),
+                     lambda: casea_step(data, cache_dir, run_dir, baseline, ccpi_disp, prefilter_sigma=1.0),
                      lambda: e2e_step(data, cache_dir)]
         for make in plan:
             step = make()
