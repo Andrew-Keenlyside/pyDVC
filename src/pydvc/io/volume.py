@@ -86,14 +86,38 @@ def _read_brick(array: Any, shape: tuple[int, int, int], box: Box, device: Devic
     return Brick(data=data, box=box, valid=valid)
 
 
+# Bytes kept after a device brick's last voxel. The u8 tricubic kernel reads each stencil row as two
+# aligned 32-bit words, which can reach up to 4 bytes past the row's last tap (kernels/cuda/fused_gn.cu).
+PAD_BYTES = 16
+
+
+def padded_empty(shape: tuple[int, ...], dtype: Any, xp: Any = np, pad_bytes: int = PAD_BYTES) -> Any:
+    """An uninitialised C-contiguous array at the start of a fresh allocation, with ``pad_bytes`` after it.
+
+    Fresh allocations are at least 16-byte aligned (cupy: 256), as the u8 kernel's word loads need.
+    """
+    dtype = np.dtype(dtype)
+    nbytes = int(np.prod(shape, dtype=np.int64)) * dtype.itemsize
+    return xp.empty(nbytes + pad_bytes, dtype=np.uint8)[:nbytes].view(dtype).reshape(shape)
+
+
+def is_padded(a: Any, pad_bytes: int = PAD_BYTES) -> bool:
+    """True for a C-contiguous cupy array, 16-byte aligned, with ``pad_bytes`` of its allocation after it."""
+    mem = getattr(getattr(a, "data", None), "mem", None)
+    if mem is None or not a.flags.c_contiguous:
+        return False
+    offset = a.data.ptr - mem.ptr
+    return a.data.ptr % 16 == 0 and offset + a.nbytes + pad_bytes <= mem.size
+
+
 def to_device(data: np.ndarray, *, stream: Any = None) -> Any:
-    """Host array -> device, staged through pinned memory so the copy is a single DMA on ``stream``."""
+    """Host array -> device (padded, see :data:`PAD_BYTES`), staged through pinned memory as one DMA on ``stream``."""
     cp = get_xp("cuda")
     import cupyx
 
     pinned = cupyx.empty_pinned(data.shape, dtype=data.dtype)
     pinned[...] = data
-    out = cp.empty(data.shape, dtype=data.dtype)
+    out = padded_empty(data.shape, data.dtype, cp)
     if stream is None:
         out.set(pinned)
     else:

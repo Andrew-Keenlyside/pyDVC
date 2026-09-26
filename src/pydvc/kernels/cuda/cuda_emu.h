@@ -9,6 +9,7 @@
 #include <barrier>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <functional>
 #include <memory>
 #include <stdexcept>
@@ -63,6 +64,18 @@ inline void __syncthreads() { emu::block_barrier->arrive_and_wait(); }
 
 template <class T>
 inline T __ldg(const T* p) { return *p; }
+
+// Word loads from byte buffers (the u8 row loads): memcpy, not a dereference, which would break
+// C++ strict aliasing and could be miscompiled at -O2.
+inline unsigned int __ldg(const unsigned int* p) {
+    unsigned int v;
+    std::memcpy(&v, p, sizeof v);
+    return v;
+}
+
+inline unsigned int __funnelshift_r(unsigned int lo, unsigned int hi, unsigned int shift) {
+    return (unsigned int)(((((std::uint64_t)hi) << 32) | lo) >> (shift & 31u));
+}
 
 template <class T>
 inline T __shfl_down_sync(unsigned, T v, unsigned delta, int = 32) {

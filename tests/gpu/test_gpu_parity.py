@@ -137,3 +137,40 @@ def test_inmemory_wavefront_on_fused_matches_the_cpu_engine(tmp_path):
     good = out["cpu"].status == 0
     assert good.mean() > 0.9
     np.testing.assert_allclose(out["fused"].params[good, :3], out["cpu"].params[good, :3], atol=1e-3)
+
+
+def test_fused_u8_packed_loads_on_an_odd_sized_misaligned_brick():
+    """The u8 word loads on the GPU, where stencils touch the last bytes of the buffer and the brick starts mid-word."""
+    import cupy as cp
+
+    from test_fused import ODD, _u8_odd_case
+    from pydvc.io.volume import is_padded
+
+    ref, deformed, centres = _u8_odd_case()
+    template = make_template(SubvolumeSpec(geometry="sphere", size=12, n_samples=400))
+    search = SearchSpec(dof=6, objective="znssd", interpolation="tricubic", disp_max=3.0)
+    seeds = np.zeros((len(centres), 3))
+    expected = solve_batch(whole_brick(ref), whole_brick(deformed), centres, seeds, template, search, backend="numpy")
+    view = cp.empty(deformed.nbytes + 1, dtype=cp.uint8)[1:].reshape(ODD)      # misaligned device brick
+    view[...] = cp.asarray(deformed)
+    assert not is_padded(view)
+    got = solve_batch(whole_brick(cp.asarray(ref)), whole_brick(view), cp.asarray(centres), cp.asarray(seeds),
+                      template, search, backend="fused")
+    status = cp.asnumpy(got.status)
+    good = expected.status == 0
+    assert good.sum() > 100 and (~good).any()
+    assert (status == expected.status).mean() >= 0.999
+    np.testing.assert_allclose(cp.asnumpy(got.displacement)[good], expected.displacement[good], atol=1e-3)
+
+
+def test_device_bricks_are_padded_and_used_without_a_copy():
+    import cupy as cp
+
+    from pydvc.io.volume import is_padded, to_device
+    from pydvc.solver.engines import make_engine
+
+    host = np.arange(np.prod((5, 7, 9)), dtype=np.uint8).reshape(5, 7, 9)
+    dev = to_device(host)
+    assert is_padded(dev) and np.array_equal(cp.asnumpy(dev), host)
+    prepared = make_engine("fused").prepare(whole_brick(dev))
+    assert prepared.data.data.ptr == dev.data.ptr                            # no second device copy

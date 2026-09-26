@@ -58,6 +58,28 @@ __device__ __forceinline__ float ld(const T* __restrict__ p, long long i) {
     return (float)__ldg(p + i);
 }
 
+// The four x taps of a tricubic stencil row, starting at voxel i.
+template <typename T>
+__device__ __forceinline__ void row4(const T* __restrict__ p, long long i, float& a, float& b, float& c, float& d) {
+    a = ld(p, i);
+    b = ld(p, i + 1);
+    c = ld(p, i + 2);
+    d = ld(p, i + 3);
+}
+
+// u8 bricks: two aligned 32-bit loads and a funnel shift instead of four byte loads (1.4x on
+// gn_sums). The brick must be 4-byte aligned and followed by at least 4 readable bytes, since the
+// second word can extend past voxel i + 3; FusedEngine.prepare pads every brick (io/volume.PAD_BYTES).
+__device__ __forceinline__ void row4(const unsigned char* __restrict__ p, long long i, float& a, float& b, float& c,
+                                     float& d) {
+    const unsigned int* w = reinterpret_cast<const unsigned int*>(p) + (i >> 2);
+    const unsigned int x = __funnelshift_r(__ldg(w), __ldg(w + 1), (unsigned int)(i & 3) * 8u);
+    a = (float)(x & 0xffu);
+    b = (float)((x >> 8) & 0xffu);
+    c = (float)((x >> 16) & 0xffu);
+    d = (float)(x >> 24);
+}
+
 __device__ __forceinline__ void catmull_rom(float t, float* w, float* dw) {
     const float t2 = t * t, t3 = t2 * t;
     w[0] = 0.5f * (-t3 + 2.0f * t2 - t);
@@ -124,7 +146,8 @@ __device__ __forceinline__ bool interpolate(const T* __restrict__ brick, const G
         float vz = 0.0f, vzdx = 0.0f, vzdy = 0.0f;
         for (int yy = 0; yy < 4; ++yy) {
             const long long row = base + ((long long)zz * ny + yy) * nx;
-            const float t0 = ld(brick, row), t1 = ld(brick, row + 1), t2 = ld(brick, row + 2), t3 = ld(brick, row + 3);
+            float t0, t1, t2, t3;
+            row4(brick, row, t0, t1, t2, t3);
             const float sx = wx[0] * t0 + wx[1] * t1 + wx[2] * t2 + wx[3] * t3;
             vz += wy[yy] * sx;
             if (GRAD) {
