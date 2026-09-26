@@ -244,10 +244,12 @@ def run(
     devices: tuple[int, ...] | None = None,
     cpu_workers: int = 1,
     max_tiles: int | None = None,
+    tile_ids: list[int] | None = None,
 ) -> list[Any]:
     """Solve this node's unwritten tiles: one process per GPU (or ``cpu_workers`` CPU processes).
 
-    ``max_tiles`` solves only the first tiles of this node's share (short profiling runs).
+    ``max_tiles`` solves only the first tiles of this node's share (short profiling runs);
+    ``tile_ids`` names the tiles to solve instead (benchmarks).
     Every run logs per-tile events and, on GPUs, 1 Hz telemetry under
     ``<workdir>/events/<run id>/`` (:mod:`pydvc.profiling`).
 
@@ -271,7 +273,7 @@ def run(
     info = node_info()
     run_id = new_run_id()
     ev_dir = events_dir(workdir, run_id)
-    ids = node_share(plan_path, info)[:max_tiles] if max_tiles else None
+    ids = list(tile_ids) if tile_ids is not None else (node_share(plan_path, info)[:max_tiles] if max_tiles else None)
     t0 = time.perf_counter()
     with GpuTelemetry(ev_dir / "gpu_telemetry.csv") if on_device(backend) else contextlib.nullcontext():
         stats = launch_local(cfg, backend=backend, devices=devices, cpu_workers=cpu_workers, tile_ids=ids)
@@ -279,7 +281,7 @@ def run(
     tiles, _ = load_plan(plan_path)
     mine = set(node_share(plan_path, info))
     written = ResultStore(cfg.output).written_cells()
-    if max_tiles:
+    if ids is not None:
         mine &= set(ids)
     missing = [t.id for t in tiles if t.id in mine and not written.issuperset(t.cells)]
     errors = [e for s in stats for e in s.errors]
