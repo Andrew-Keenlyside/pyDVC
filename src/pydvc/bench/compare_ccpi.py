@@ -147,13 +147,46 @@ def run_pydvc_cli(cfg: RunConfig, out: Path, backend: str) -> TimedRun:
     return TimedRun(f"pyDVC {backend}: CLI end to end", n, sum(stages.values()), {"stages_s": stages}, c.output)
 
 
-def agreement(ours: str, theirs: str) -> dict[str, Any]:
-    from pydvc.bench.metrics import against_disp
+def agreement(ours: str, theirs: str, *, shape_xyz: Any = None, reach: float | None = None) -> dict[str, Any]:
+    """Point-by-point agreement of our results with a CCPi ``.disp``, overall and split into interior and edge.
 
-    a = against_disp(ours, theirs)
-    return {"median_abs": a.median_abs, "p95_abs": a.p95_abs, "status_agreement": a.status_agreement,
-            "n_good_both": a.n_good, "rmse": a.rmse,
-            "q1_pass": bool(a.median_abs <= 0.05 and a.p95_abs <= 0.2 and (a.status_agreement or 0) >= 0.98)}
+    With ``shape_xyz`` and ``reach`` (template extent + stencil), points whose subvolume leaves
+    the volume at CCPi's displacement are "edge" (:func:`pydvc.bench.metrics.edge_mask`): CCPi
+    reads wrapped or unset data there instead of failing, so Q1 is judged on the interior.
+    """
+    import numpy as np
+
+    from pydvc.bench.metrics import _match, compare_arrays, edge_mask, load_results
+
+    a, b = load_results(ours), load_results(theirs)
+    ia, ib = _match(a["point_id"], b["point_id"])
+
+    def summary(sel: Any) -> dict[str, Any]:
+        acc = compare_arrays(a["displacement"][ia][sel], b["displacement"][ib][sel], a["status"][ia][sel],
+                             ref_status=b["status"][ib][sel])
+        return {"n_points": int(sel.sum()), "median_abs": acc.median_abs, "p95_abs": acc.p95_abs,
+                "status_agreement": acc.status_agreement, "n_good_both": acc.n_good_both,
+                "n_good_theirs": acc.n_good_ref, "rmse": acc.rmse, "status_confusion": acc.status_confusion}
+
+    out = summary(np.ones(len(ia), dtype=bool))
+    if shape_xyz is not None and reach is not None:
+        edge = edge_mask(b["xyz"][ib], b["displacement"][ib], shape_xyz, reach)
+        out["interior"] = summary(~edge) if (~edge).any() else None
+        out["edge"] = summary(edge) if edge.any() else None
+    judged = out.get("interior") or out
+    out["q1_judged_on"] = "interior" if out.get("interior") else "all points"
+    out["q1_pass"] = bool(judged["median_abs"] <= 0.05 and judged["p95_abs"] <= 0.2
+                          and (judged["status_agreement"] or 0) >= 0.98)
+    return out
+
+
+def _edge_geometry(cfg: RunConfig) -> tuple[Any, float]:
+    """Volume shape (x, y, z) and the reach of a subvolume's tricubic stencils."""
+    from pydvc.geometry.templates import make_template
+    from pydvc.io.volume import open_volume
+
+    shape_zyx = open_volume(cfg.volumes, "reference").shape
+    return tuple(shape_zyx[::-1]), make_template(cfg.subvolume).extent() + 2.0
 
 
 def compare(
@@ -186,20 +219,26 @@ def compare(
         runs.append(run_pydvc_parity(cfg, out, b))
         if cli:
             runs.append(run_pydvc_cli(cfg, out, b))
+    from pydvc.bench.smoke import environment
+
     report: dict[str, Any] = {
         "title": title,
         "machine": {"host": platform.node(), "cpu": platform.processor() or platform.machine(), "cores": os.cpu_count()},
+        "environment": environment(),
+        "git": _git_sha(),
         "ccpi_versions": {str(e): dvc_version(e) for e in ccpi_exes},
         "runs": [dict(dataclasses.asdict(r), points_per_second=r.points_per_second) for r in runs],
         "agreement": {},
     }
     ours = [r for r in runs if r.name.startswith("pyDVC") and r.results]
     ccpi = [r for r in runs if r.name.startswith("CCPi") and r.results and not r.detail.get("sampled")]
+    shape_xyz, reach = _edge_geometry(cfg)
     for o in ours:
         for c in ccpi:
-            report["agreement"][f"{o.name} vs {c.name}"] = agreement(o.results, c.results)
+            report["agreement"][f"{o.name} vs {c.name}"] = agreement(o.results, c.results, shape_xyz=shape_xyz, reach=reach)
         if reference_disp:
-            report["agreement"][f"{o.name} vs reference .disp"] = agreement(o.results, str(reference_disp))
+            report["agreement"][f"{o.name} vs reference .disp"] = agreement(o.results, str(reference_disp),
+                                                                            shape_xyz=shape_xyz, reach=reach)
         if truth:
             from pydvc.bench.metrics import against_truth
 
@@ -230,12 +269,29 @@ def markdown(report: dict[str, Any]) -> str:
         rel = f"{r['points_per_second'] / idvc['points_per_second']:.1f}x" if idvc else "-"
         relb = f"{r['points_per_second'] / best_ccpi['points_per_second']:.1f}x" if best_ccpi else "-"
         lines.append(f"| {r['name']} | {r['points']} | {r['seconds']:.1f} s | {r['points_per_second']:.1f} | {rel} | {relb} |")
-    lines += ["", "| comparison | median \\|du\\| | p95 \\|du\\| | status agreement | RMSE (x, y, z) |", "|---|---|---|---|---|"]
+    lines += ["", "| comparison | points | median \\|du\\| | p95 \\|du\\| | status agreement | GOOD in both | RMSE (x, y, z) | Q1 |",
+              "|---|---|---|---|---|---|---|---|"]
     for name, a in report["agreement"].items():
-        rmse = ", ".join(f"{v:.4f}" for v in a["rmse"])
-        sa = f"{100 * a['status_agreement']:.1f} %" if a.get("status_agreement") is not None else "-"
-        lines.append(f"| {name} | {a['median_abs']:.4f} | {a['p95_abs']:.4f} | {sa} | {rmse} |")
+        parts = [("", a)] + [(f" ({k})", a[k]) for k in ("interior", "edge") if a.get(k)]
+        for suffix, x in parts:
+            rmse = ", ".join(f"{v:.4f}" for v in x["rmse"])
+            sa = f"{100 * x['status_agreement']:.1f} %" if x.get("status_agreement") is not None else "-"
+            judged_row = suffix == " (interior)" or (suffix == "" and not a.get("interior"))
+            q1 = ("pass" if a["q1_pass"] else "FAIL") if "q1_pass" in a and judged_row else ""
+            lines.append(f"| {name}{suffix} | {x.get('n_points', '-')} | {x['median_abs']:.4f} | {x['p95_abs']:.4f} | {sa} | "
+                         f"{x.get('n_good_both', '-')} | {rmse} | {q1} |")
+    lines += ["", "Edge: points whose subvolume leaves the image at CCPi's displacement. CCPi reads wrapped or unset "
+              "data there instead of failing (it tests samples against the box it loaded, not the image); pyDVC "
+              "reports RANGE_FAIL. Q1 is judged on the interior."]
     return "\n".join(lines) + "\n"
+
+
+def _git_sha() -> str | None:
+    try:
+        return subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True,
+                              cwd=Path(__file__).parent).stdout.strip()
+    except Exception:
+        return None
 
 
 def main(argv: list[str] | None = None) -> None:

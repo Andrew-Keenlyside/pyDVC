@@ -28,6 +28,9 @@ class Accuracy:
     median_abs: float = float("nan")       # median |error| (Euclidean), voxels
     p95_abs: float = float("nan")
     status_agreement: float | None = None  # against another code: fraction with the same (CCPi) status
+    n_good_both: int | None = None         # against another code: GOOD in both (the points errors are taken over)
+    n_good_ref: int | None = None          # against another code: GOOD in the other code
+    status_confusion: dict[str, int] | None = None   # "ours/theirs" CCPi status codes -> count
 
     def summary(self) -> str:
         names = {int(s): s.name for s in PointStatus}
@@ -99,8 +102,11 @@ def compare_arrays(
         ours = np.array([PointStatus(int(s)).to_ccpi() for s in status])
         agreement = float((ours == ref_status).mean()) if n else float("nan")
         good_both = good & (ref_status == PointStatus.GOOD)
+        pairs, pair_counts = np.unique(np.stack([ours, ref_status], axis=1), axis=0, return_counts=True) if n else ([], [])
+        confusion = {f"{int(o)}/{int(t)}": int(c) for (o, t), c in zip(pairs, pair_counts)}
     else:
         good_both = good
+        confusion = None
     err = a[good_both] - b[good_both]
     mag = np.linalg.norm(err, axis=1)
     nan3 = (float("nan"),) * 3
@@ -120,7 +126,27 @@ def compare_arrays(
         median_abs=pct(50),
         p95_abs=pct(95),
         status_agreement=agreement,
+        n_good_both=int(good_both.sum()) if ref_status is not None else None,
+        n_good_ref=int((ref_status == PointStatus.GOOD).sum()) if ref_status is not None else None,
+        status_confusion=confusion,
     )
+
+
+def edge_mask(xyz: Any, displacement: Any, shape_xyz: Any, reach: float) -> np.ndarray:
+    """Points whose reference or displaced subvolume, grown by ``reach``, leaves the volume.
+
+    ``reach`` is the template extent plus the interpolation stencil (2 voxels for tricubic).
+    CCPi does not test samples against the image (it reads a box around each point
+    from the file, wrapping into the next row or past the end), so its results for
+    these points are not comparable; pyDVC marks them RANGE_FAIL.
+    """
+    xyz = np.asarray(xyz, dtype=np.float64).reshape(-1, 3)
+    hi = np.asarray(shape_xyz, dtype=np.float64) - 1.0
+    moved = xyz + np.nan_to_num(np.asarray(displacement, dtype=np.float64).reshape(-1, 3))
+    out = np.zeros(len(xyz), dtype=bool)
+    for c in (xyz, moved):
+        out |= ((c - reach) < 0).any(axis=1) | ((c + reach) > hi).any(axis=1)
+    return out
 
 
 def against_truth(results_path: str | Path, truth_path: str | Path) -> Accuracy:
