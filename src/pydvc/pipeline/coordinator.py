@@ -67,9 +67,22 @@ def _device_bytes(backend: str) -> int:
         import cupy
 
         return int(cupy.cuda.runtime.memGetInfo()[1])
+    return host_memory()[0]
+
+
+def host_memory() -> tuple[int, int | None]:
+    """(total, available) bytes of host RAM; available is None where the OS does not report it (e.g. macOS)."""
     import os
 
-    return int(os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES"))
+    try:
+        total = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
+    except (ValueError, OSError, AttributeError):
+        total = 1 << 40                                  # unknown: do not block the run on it
+    try:
+        avail = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_AVPHYS_PAGES")
+    except (ValueError, OSError, AttributeError):
+        avail = None
+    return int(total), (int(avail) if avail is not None else None)
 
 
 def _plan(cfg: RunConfig, *, backend: str) -> dict[str, Any]:
@@ -186,13 +199,12 @@ def _seed_coarse(cfg: RunConfig, backend: str) -> dict[str, Any]:
 
 def _require_whole_volumes_fit(cfg: RunConfig, what: str) -> None:
     """The wavefront and (MVP) coarse passes hold both whole volumes in host memory; fail early if they cannot."""
-    import os
-
     from pydvc.io.volume import open_volume
 
     v = open_volume(cfg.volumes, "reference")
     need = 2 * int(np.prod(v.shape)) * v.dtype.itemsize
-    have = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_AVPHYS_PAGES")
+    total, avail = host_memory()
+    have = avail if avail is not None else total
     if need > 0.8 * have:
         raise MemoryError(
             f"{what} holds both volumes in memory ({need / 1e9:.0f} GB; {have / 1e9:.0f} GB available). "

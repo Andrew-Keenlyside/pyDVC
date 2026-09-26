@@ -31,7 +31,26 @@ _LOCK = threading.Lock()
 
 
 def compiler() -> str | None:
-    return shutil.which(os.environ.get("CXX", "g++"))
+    """The C++ compiler for the emulator, or None if there is none that builds C++20 ``<barrier>`` code."""
+    cxx = shutil.which(os.environ.get("CXX", "g++"))
+    if cxx is None:
+        return None
+    return cxx if _cxx20_ok(cxx) else None
+
+
+_PROBED: dict[str, bool] = {}
+
+
+def _cxx20_ok(cxx: str) -> bool:
+    if cxx not in _PROBED:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "probe.cpp"
+            src.write_text("#include <barrier>\n#include <thread>\nint main() { std::barrier<> b(1); b.arrive_and_wait(); }\n")
+            proc = subprocess.run([cxx, "-std=c++20", "-pthread", str(src), "-o", str(Path(tmp) / "probe")], capture_output=True)
+            _PROBED[cxx] = proc.returncode == 0
+    return _PROBED[cxx]
 
 
 def _cache_dir() -> Path:

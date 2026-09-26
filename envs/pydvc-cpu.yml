@@ -1,0 +1,15 @@
+# Local machine or CPU cluster nodes. Then, from the repository root:
+#   pip install -e ".[test,cpu-fast]"          # pyDVC, zarr and the pinned zarr-vectors commit
+name: pydvc
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - numpy>=1.24
+  - scipy>=1.11
+  - pyyaml>=6
+  - numba>=0.59          # backend "cpu": the fused step on all cores
+  - pytest>=8
+  - cxx-compiler         # C++20 compiler for the CUDA-emulator tests (skipped without one)
+  - git                  # pip fetches zarr-vectors from its git commit
+  - pip

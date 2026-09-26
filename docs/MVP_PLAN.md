@@ -231,6 +231,11 @@ GPU run.
   to a median 0.010 voxel. Status agreement is 97.8 %: 104 edge points whose
   subvolume leaves the image, which pyDVC flags and CCPi does not. The
   real-data run is one command, `python -m pydvc.bench.case_a`.
+* **Ready for your machines:** [TESTING.md](TESTING.md) covers the
+  environment files (`envs/`), `pydvc selftest` (PASS/FAIL per backend), the
+  first GPU run, case A against iDVC, and the cluster jobs. A fresh
+  environment built from `envs/pydvc-cpu.yml` passes the test suite and the
+  self-test.
 * **Outstanding (needs the hardware):** Q2 and Q3 on case L, the 4096³
   end-to-end time, and the GPU numbers for case A. `sbatch
   scripts/slurm/case_L.sbatch 2048 <dir>` runs the whole sequence. Multi-node

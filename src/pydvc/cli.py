@@ -114,6 +114,13 @@ def cmd_compare(args: argparse.Namespace) -> None:
     print(compare(args.results, args.reference).summary())
 
 
+def cmd_selftest(args: argparse.Namespace) -> None:
+    from pydvc.bench.smoke import main as selftest
+
+    argv = ["--out", args.out] + (["--backends", *args.backends] if args.backends else []) + (["--no-ccpi"] if args.no_ccpi else [])
+    raise SystemExit(selftest(argv))
+
+
 def cmd_ccpi(args: argparse.Namespace) -> None:
     """Drop-in for CCPi's ``dvc <dvc_in>``: same inputs, same .disp/.stat outputs, same progress lines for iDVC."""
     raise todo("M5", "pydvc ccpi")
@@ -185,6 +192,12 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("results")
     s.add_argument("reference", help="truth.npz or .disp")
     s.set_defaults(func=cmd_compare)
+
+    s = sub.add_parser("selftest", help="check this installation end to end on a small synthetic case (PASS/FAIL)")
+    s.add_argument("--out", default="runs/selftest")
+    s.add_argument("--backends", nargs="+", help="default: every backend available here")
+    s.add_argument("--no-ccpi", action="store_true", help="skip the CCPi dvc comparison")
+    s.set_defaults(func=cmd_selftest)
 
     s = sub.add_parser("ccpi", help="drop-in replacement for CCPi's `dvc <dvc_in>`")
     s.add_argument("dvc_in")

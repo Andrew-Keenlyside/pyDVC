@@ -228,23 +228,22 @@ coordinator.run(cfg)          # one process per visible GPU
 coordinator.finalize(cfg, export_disp=True)
 ```
 
-## Installation (development)
+## Installation and testing
 
-Requires Python ≥ 3.11 (because of zarr v3), CUDA 12 and a GPU with ≥ 12 GB
-for development. zarr-vectors is pinned to a commit on its `gpu-backend`
-branch, since that branch is under active development.
+Python ≥ 3.11. **[docs/TESTING.md](docs/TESTING.md)** walks through
+installation, the local self-test, the first GPU run, the iDVC example dataset
+and the cluster runs. In short:
 
 ```bash
-git clone <this repo> pyDVC && cd pyDVC
-pip install -e ".[gpu,test]"          # cupy + zarr-vectors GPU extras
-pip install -e ".[cpu-fast]"          # numba: the restructured-CPU engine (backend "cpu")
-pip install -e ".[gpu-io]"            # optional: kvikio / GPUDirect Storage
-pip install -e ".[mpi]"               # optional: mpi4py for multi-node
+micromamba create -f envs/pydvc-cpu.yml && micromamba activate pydvc   # or envs/pydvc-gpu.yml (CUDA 12)
+pip install -e ".[test,cpu-fast]"     # pyDVC + zarr + zarr-vectors (pinned gpu-backend commit) + numba
+pytest -q && pydvc selftest           # ~5 min; PASS/FAIL per backend
+eval "$(scripts/get_ccpi_dvc.sh)"     # optional: CCPi dvc 22.0.0 for the baselines
 ```
 
-In conda environments, install `cupy` from conda-forge and `kvikio` from
-rapidsai rather than via pip extras, following the
-[zarr-vectors GPU guide](https://github.com/AllenInstitute/zarr-vectors-py/blob/gpu-backend/docs/how_to/gpu.md).
+zarr-vectors is pinned to a commit on its `gpu-backend` branch, since that
+branch is under active development. Optional extras: `[gpu]` (cupy, GPU
+codecs), `[gpu-io]` (kvikio / GPUDirect Storage), `[mpi]`, `[tiff]`.
 
 ## Data conventions
 

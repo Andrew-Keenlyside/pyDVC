@@ -1,0 +1,18 @@
+# GPU workstation or cluster (CUDA 12 driver). Then, from the repository root:
+#   pip install -e ".[test,cpu-fast]"
+#   pip install "zarr-vectors[gpu-codecs] @ git+https://github.com/AllenInstitute/zarr-vectors-py.git@06a3bc8a08afefc02cd1ffb265d67a03df798b87"
+name: pydvc-gpu
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - numpy>=1.24
+  - scipy>=1.11
+  - pyyaml>=6
+  - numba>=0.59
+  - pytest>=8
+  - cxx-compiler
+  - git
+  - pip
+  - cupy>=13             # backends "fused" and "cupy"; brings the CUDA runtime and NVRTC
+  - cuda-version=12
