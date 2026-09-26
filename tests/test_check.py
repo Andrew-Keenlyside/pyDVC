@@ -19,19 +19,19 @@ def _one(metrics, **kw):
     return f
 
 
-@pytest.mark.parametrize("value, status", [(4.1, "pass"), (4.4, "warn"), (5.0, "fail"), (3.0, "note")])
-def test_kernel_timings_warn_at_7_and_fail_at_20_percent(value, status):
+@pytest.mark.parametrize("value, status", [(4.6, "pass"), (5.2, "warn"), (5.8, "fail"), (3.0, "note")])
+def test_kernel_timings_warn_at_20_and_fail_at_40_percent(value, status):
     assert _one({"kernel.case_a.fused.sums_us": {"value": value}}).status == status
 
 
-@pytest.mark.parametrize("value, status", [(10.9, "pass"), (11.5, "warn"), (13.0, "fail")])
-def test_end_to_end_timings_warn_at_10_and_fail_at_25_percent(value, status):
+@pytest.mark.parametrize("value, status", [(12.0, "pass"), (13.0, "warn"), (16.0, "fail")])
+def test_end_to_end_timings_warn_at_25_and_fail_at_50_percent(value, status):
     assert _one({"e2e.casea_grid24.fused.seconds": {"value": value}}).status == status
 
 
 def test_noisy_baselines_widen_the_limits():
-    base = {"metrics": {"kernel.x.fused.sums_us": {"value": 4.0, "cv": 0.05}}}     # 3 cv = 15 % > 7 %
-    [f] = compare({"kernel.x.fused.sums_us": {"value": 4.4}}, base, same_hardware=True, gpu_busy=False)
+    base = {"metrics": {"kernel.x.fused.sums_us": {"value": 4.0, "cv": 0.10}}}     # 3 cv = 30 % > 20 %
+    [f] = compare({"kernel.x.fused.sums_us": {"value": 5.0}}, base, same_hardware=True, gpu_busy=False)
     assert f.status == "pass"
 
 

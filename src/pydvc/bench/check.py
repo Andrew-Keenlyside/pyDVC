@@ -29,9 +29,12 @@ Rules:
   -0.2 %). Bit-identical results are expected but only warned about, and only
   when the software fingerprint matches the baseline's.
 * **Speed is compared on the same hardware only**, and not while other
-  processes use the GPU. Kernel timings warn at 7 % slower and fail at 20 %,
-  end-to-end timings at 10 % and 25 %, each widened to 3x the timing's
-  coefficient of variation at baseline. More than 10 % faster is reported.
+  processes use the GPU. Kernel timings warn at 20 % slower and fail at 40 %,
+  end-to-end timings at 25 % and 50 %, each widened to 3x the timing's
+  coefficient of variation at baseline. Back-to-back runs differ by up to
+  ~18 % on a workstation GPU (clocks, temperature), so the limits catch real
+  regressions (the ones this suite exists for were 2-20x), not drift. More
+  than 20 % faster is reported.
 
 Case A data comes from ``--case-a DIR`` or ``$PYDVC_CASE_A``. Without it the
 case A steps are skipped (result ``PASS (partial)``; ``--require-case-a``
@@ -60,8 +63,10 @@ from typing import Any, Callable
 import numpy as np
 
 TIERS = ("quick", "gpu", "full")
-PERF_LIMITS = {"kernel": (0.07, 0.20), "e2e": (0.10, 0.25)}   # (warn, fail) fractional slow-down
-FASTER_NOTE = 0.10
+# (warn, fail) fractional slow-down. Back-to-back runs on the RTX A2000 workstation differ by up to ~18 %
+# (boost clocks, temperature), much more than the spread within one run, so tighter limits give false alarms.
+PERF_LIMITS = {"kernel": (0.20, 0.40), "e2e": (0.25, 0.50)}
+FASTER_NOTE = 0.20
 CCPI_SLACK = {"median": 0.005, "p95": 0.005, "status_agreement": -0.002}
 ARRAY_STATUS_MIN, ARRAY_DU_MAX = 0.999, 1e-3
 KERNEL_REL_ERR_MAX = 1e-4

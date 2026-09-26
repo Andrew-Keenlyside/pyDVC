@@ -71,7 +71,8 @@ rules are in [`bench/check.py`](../src/pydvc/bench/check.py):
   float64, case A results against the baseline arrays (status ≥ 99.9 %,
   |du| ≤ 1e-3 voxel) and against CCPi (no worse than the baseline).
 * **Speed is compared on the same hardware only**, and only on an idle GPU:
-  kernel timings warn at +7 % and fail at +20 %, end-to-end at +10 % / +25 %.
+  kernel timings warn at +20 % and fail at +40 %, end-to-end at +25 % / +50 %
+  (back-to-back runs on a workstation GPU differ by up to ~18 %).
 
 Baselines are per machine: `docs/benchmarks/baselines/<machine>.json`
 (`PYDVC_MACHINE`, default the host name) is committed, and the reference result
