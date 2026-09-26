@@ -246,7 +246,8 @@ def kernel_step(case_a: Path | None, cache: Path, run_dir: Path) -> Step:
     return _timed(go, Step("kernel benchmark"))
 
 
-def casea_step(case_a: Path | None, cache: Path, run_dir: Path, baseline: dict[str, Any] | None) -> Step:
+def casea_step(case_a: Path | None, cache: Path, run_dir: Path, baseline: dict[str, Any] | None,
+               ccpi_disp: str | None = None) -> Step:
     """The central grid (CCPi's 4 680 points, wavefront, in memory) on fused and cpu."""
 
     def go(step: Step) -> None:
@@ -260,7 +261,7 @@ def casea_step(case_a: Path | None, cache: Path, run_dir: Path, baseline: dict[s
             return
         cfg = case_config(case_a, cache)
         pid, xyz = load_points(cfg)
-        ccpi = _ccpi_reference(case_a, baseline)
+        ccpi = _ccpi_reference(case_a, baseline, ccpi_disp)
         for b in (["fused"] if gpu_available() else []) + ["cpu"]:
             solve_in_memory(cfg, pid[:64], xyz[:64], backend=b, strategy="rigid")        # compile outside the timing
             t0 = time.perf_counter()
@@ -276,7 +277,8 @@ def casea_step(case_a: Path | None, cache: Path, run_dir: Path, baseline: dict[s
             step.metrics[f"casea.{b}.ccpi.median"] = {"value": acc.median_abs}
             step.metrics[f"casea.{b}.ccpi.p95"] = {"value": acc.p95_abs}
             step.metrics[f"casea.{b}.ccpi.status_agreement"] = {"value": acc.status_agreement}
-            step.detail += f"{b}: {step.metrics[f'casea.{b}.seconds']['value']:.1f} s, vs CCPi ({len(common)} pts) median {acc.median_abs:.4f}; "
+            step.detail += (f"{b}: {step.metrics[f'casea.{b}.seconds']['value']:.1f} s, vs CCPi ({len(common)} pts, "
+                            f"{ccpi.name}) median {acc.median_abs:.4f}; ")
             if baseline and f"casea.{b}" in baseline.get("arrays", {}):
                 verdict = compare_with_baseline_arrays(path, Path(baseline["arrays"][f"casea.{b}"]["path"]))
                 step.detail += verdict.detail + "; "
@@ -286,8 +288,10 @@ def casea_step(case_a: Path | None, cache: Path, run_dir: Path, baseline: dict[s
     return _timed(go, Step("case A central grid"))
 
 
-def _ccpi_reference(case_a: Path, baseline: dict[str, Any] | None) -> Path:
-    """CCPi's result for the central grid: the full run recorded in the baseline, else CCPi's 5-point reference."""
+def _ccpi_reference(case_a: Path, baseline: dict[str, Any] | None, explicit: str | None = None) -> Path:
+    """CCPi's result for the central grid: ``--ccpi-disp``, else the one recorded in the baseline, else CCPi's 5-point reference."""
+    if explicit:
+        return Path(explicit)
     if baseline and baseline.get("ccpi_disp") and Path(baseline["ccpi_disp"]).exists():
         return Path(baseline["ccpi_disp"])
     return case_a / "completed_central_grid.disp"
@@ -487,7 +491,7 @@ def run(tier: str, *, case_a: str | None = None, cache: str | None = None, machi
         if tier == "full":
             plan += [lambda: pytest_step("tests (slow)", "slow", run_dir, root),
                      lambda: kernel_step(data, cache_dir, run_dir),
-                     lambda: casea_step(data, cache_dir, run_dir, baseline),
+                     lambda: casea_step(data, cache_dir, run_dir, baseline, ccpi_disp),
                      lambda: e2e_step(data, cache_dir)]
         for make in plan:
             step = make()
