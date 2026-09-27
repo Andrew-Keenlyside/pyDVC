@@ -26,6 +26,9 @@ APPTAINER_TMPDIR=/hdd/andrew/apptainer-tmp bash containers/build.sh --cuda 12.4 
 rsync -avP pydvc.sif pryor:/home/akeenlys/storage_main/bridge_project_data/containers/
 ```
 
+Build the image from the same commit you clone on the cluster (its label records it:
+`apptainer inspect --labels pydvc.sif`); the job's code and the image's must match.
+
 The build takes 10–20 minutes. The image holds pyDVC (with the commit it was
 built from, `PYDVC_COMMIT`), CuPy with a matching NVRTC and CUDA headers,
 numba, nvCOMP, a C++20 compiler for the CUDA emulator tests, Nsight Systems and
@@ -38,7 +41,7 @@ instead of the image's copy.
 ```bash
 ssh pryor
 cd /home/akeenlys/storage_main/bridge_project_data
-git clone -b cluster-groundwork https://github.com/Andrew-Keenlyside/pyDVC.git pydvc
+git clone -b develop https://github.com/Andrew-Keenlyside/pyDVC.git pydvc
 mkdir -p logs containers
 ```
 
