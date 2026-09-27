@@ -101,11 +101,14 @@ def solve_in_memory(
     seeds: np.ndarray | None = None,
     backend: Backend = "numpy",
     progress: Callable[[str], None] | None = None,
+    on_solved: Callable[[np.ndarray, Results], None] | None = None,
 ) -> Results:
     """Correlate the given points against whole-volume bricks.
 
     ``strategy`` overrides ``cfg.seeding.strategy`` (``rigid`` or ``wavefront``);
     ``seeds`` (N, 3), if given, replaces ``rigid_trans`` for the rigid strategy.
+    ``on_solved(idx, results)`` is called after each batch (each wavefront shell) with the
+    indices just solved, so a caller can report progress point by point (``pydvc ccpi``).
     """
     t0 = time.perf_counter()
     say = progress or (lambda msg: None)
@@ -146,6 +149,8 @@ def solve_in_memory(
         host = {k: (v.get() if hasattr(v, "get") else v) for k, v in vars(out).items()}  # GPU engines return cupy
         res.params[idx], res.status[idx], res.objmin[idx] = host["params"], host["status"], host["objmin"]
         res.n_iter[idx], res.seed[idx] = host["n_iter"], host["seed"]
+        if on_solved is not None:
+            on_solved(np.asarray(idx), res)
 
     t1 = time.perf_counter()
     strategy = strategy or cfg.seeding.strategy

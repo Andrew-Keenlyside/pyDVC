@@ -12,7 +12,6 @@ from __future__ import annotations
 import argparse
 from collections.abc import Sequence
 
-from pydvc._todo import todo
 
 
 def _cfg(args: argparse.Namespace):
@@ -130,7 +129,9 @@ def cmd_check(args: argparse.Namespace) -> None:
 
 def cmd_ccpi(args: argparse.Namespace) -> None:
     """Drop-in for CCPi's ``dvc <dvc_in>``: same inputs, same .disp/.stat outputs, same progress lines for iDVC."""
-    raise todo("M5", "pydvc ccpi")
+    from pydvc.ccpi_dropin import run
+
+    raise SystemExit(run(args.dvc_in, backend=args.backend))
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -214,8 +215,10 @@ def build_parser() -> argparse.ArgumentParser:
     add_arguments(s)
     s.set_defaults(func=cmd_check)
 
-    s = sub.add_parser("ccpi", help="drop-in replacement for CCPi's `dvc <dvc_in>`")
+    s = sub.add_parser("ccpi", help="drop-in replacement for CCPi's `dvc <dvc_in>` (also installed as pydvc-dvc)")
     s.add_argument("dvc_in")
+    s.add_argument("--backend", choices=["fused", "cupy", "cpu", "numpy"], default=None,
+                   help="default: $PYDVC_BACKEND, else fused on a GPU, else cpu")
     s.set_defaults(func=cmd_ccpi)
 
     return p
