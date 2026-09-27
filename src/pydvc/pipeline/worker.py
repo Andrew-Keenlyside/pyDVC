@@ -21,6 +21,7 @@ GPU; ``cpu`` (numba) and ``numpy`` keep them on the host.
 
 from __future__ import annotations
 
+import os
 import queue
 import threading
 import time
@@ -129,18 +130,28 @@ class TileWorker:
         self.results.check_prefilter(cfg.volumes.prefilter_sigma)
         self.engine = make_engine(self.backend)
         self.seed_field = load_seed_field(seed_field_path)
+        from pydvc.profiling import EventLog
+
+        self.events = EventLog.for_worker(cfg.workdir, device)
+        self.events.record("worker_start", t=time.time(), device=device, backend=self.backend, pid=os.getpid())
 
     # -------------------------------------------------------------- stages
 
     def _load(self, tile: Tile) -> _Loaded:
+        from pydvc.profiling import nvtx_range
+
         dev = "cuda" if self.on_device else "cpu"
+        t0 = time.time()
         try:
-            ref = self.ref_vol.read_brick(tile.ref_box, device=dev)
-            deformed = self.def_vol.read_brick(tile.def_box, device=dev)
-            pts = self.points.read_tile(list(tile.cells), device="cpu")
+            with nvtx_range(f"read tile {tile.id}"):
+                ref = self.ref_vol.read_brick(tile.ref_box, device=dev)
+                deformed = self.def_vol.read_brick(tile.def_box, device=dev)
+                pts = self.points.read_tile(list(tile.cells), device="cpu")
             nbytes = int(ref.data.nbytes + deformed.data.nbytes)
+            self.events.record("read", tile=tile.id, t0=t0, t1=time.time(), bytes=nbytes)
             return _Loaded(tile, ref, deformed, pts, nbytes)
         except Exception:
+            self.events.record("read_failed", tile=tile.id, t0=t0, t1=time.time())
             return _Loaded(tile, None, None, None, 0, traceback.format_exc())
 
     def _batch_size(self, n_points: int) -> int:
@@ -171,6 +182,8 @@ class TileWorker:
             "n_iter": np.zeros(n, dtype=np.uint8),
             "seed": seeds.astype(np.float32),
         }
+        from pydvc.profiling import nvtx_range
+
         ref, deformed = self.engine.prepare(loaded.ref), self.engine.prepare(loaded.deformed)   # once per tile
         for batch in iter_batches(morton_order(xyz), self._batch_size(n)):
             res = solve_batch(ref, deformed, xyz[batch], seeds[batch], self.template, self.cfg.search, engine=self.engine)
@@ -180,11 +193,20 @@ class TileWorker:
             out["status"][batch] = _host(res.status)
             out["objmin"][batch] = _host(res.objmin)
             out["n_iter"][batch] = _host(res.n_iter)
+        if self.cfg.uncertainty_seeds > 0:
+            from pydvc.solver.uncertainty import seed_spread
+
+            with nvtx_range(f"uncertainty tile {loaded.tile.id}"):
+                out["displacement_sd"] = seed_spread(ref, deformed, xyz, seeds, out["displacement"], out["status"],
+                                                     self.cfg.subvolume, self.cfg.search, self.engine,
+                                                     self.cfg.uncertainty_seeds).astype(np.float32)
         return out
 
     # -------------------------------------------------------------- loop
 
     def run(self, source: TileSource) -> WorkerStats:
+        from pydvc.profiling import nvtx_range
+
         stats = WorkerStats(device=self.device)
         written = self.results.written_cells()
         loads: queue.Queue = queue.Queue(maxsize=max(self.cfg.cluster.prefetch_depth, 1))
@@ -210,7 +232,10 @@ class TileWorker:
                     return
                 tile, pts, res = item
                 try:
-                    self.results.write_tile(pts, res)
+                    t0 = time.time()
+                    with nvtx_range(f"write tile {tile.id}"):
+                        self.results.write_tile(pts, res)
+                    self.events.record("write", tile=tile.id, t0=t0, t1=time.time())
                     source.done(tile, True)
                 except Exception:
                     write_errors.append(traceback.format_exc())
@@ -222,13 +247,17 @@ class TileWorker:
                 source.done(loaded.tile, False)
                 return None
             t1 = time.perf_counter()
+            w0 = time.time()
             try:
-                res = self.solve_tile(loaded)
+                with nvtx_range(f"solve tile {loaded.tile.id}"):
+                    res = self.solve_tile(loaded)
             except Exception:
                 stats.errors.append(f"tile {loaded.tile.id}: solve failed\n{traceback.format_exc()}")
                 source.done(loaded.tile, False)
                 return None
             stats.seconds_compute += time.perf_counter() - t1
+            self.events.record("solve", tile=loaded.tile.id, t0=w0, t1=time.time(), points=len(res["status"]),
+                               iters=int(res["n_iter"].astype(np.int64).sum()), good=int((res["status"] == 0).sum()))
             stats.tiles += 1
             stats.points += len(res["status"])
             stats.bytes_read += loaded.bytes_read
@@ -243,17 +272,21 @@ class TileWorker:
         t_wri.start()
         try:
             while True:
-                t0 = time.perf_counter()
+                t0, w0 = time.perf_counter(), time.time()
                 loaded = loads.get()
                 if stats.tiles or stats.errors:          # the first read is start-up, not a stall
                     stats.seconds_io_wait += time.perf_counter() - t0
+                    self.events.record("wait_read", t0=w0, t1=time.time())
+                else:
+                    self.events.record("first_read", t0=w0, t1=time.time())
                 if loaded is _END:
                     break
                 item = compute(loaded)
                 if item is not None:
-                    t2 = time.perf_counter()
+                    t2, w2 = time.perf_counter(), time.time()
                     writes.put(item)
                     stats.seconds_write_wait += time.perf_counter() - t2
+                    self.events.record("wait_write", t0=w2, t1=time.time())
         finally:
             writes.put(_END)
             t_wri.join()
@@ -270,6 +303,9 @@ class TileWorker:
                 write_errors.append(traceback.format_exc())
                 source.done(tile, False)
         stats.errors.extend(f"write failed\n{e}" for e in write_errors)
+        self.events.record("worker_end", t=time.time(), tiles=stats.tiles, points=stats.points,
+                           errors=len(stats.errors))
+        self.events.close()
         return stats
 
 

@@ -12,7 +12,6 @@ from __future__ import annotations
 import argparse
 from collections.abc import Sequence
 
-from pydvc._todo import todo
 
 
 def _cfg(args: argparse.Namespace):
@@ -67,7 +66,8 @@ def cmd_run(args: argparse.Namespace) -> None:
     from pydvc.pipeline import coordinator
 
     devices = tuple(args.devices) if args.devices else None
-    for st in coordinator.run(_cfg(args), backend=args.backend, devices=devices, cpu_workers=args.cpu_workers):
+    for st in coordinator.run(_cfg(args), backend=args.backend, devices=devices, cpu_workers=args.cpu_workers,
+                              max_tiles=getattr(args, "max_tiles", None)):
         busy = st.seconds_compute + st.seconds_io_wait
         wait = f"{100 * st.seconds_io_wait / busy:.1f} %" if busy else "n/a"
         print(f"device {st.device}: {st.tiles} tiles solved, {st.tiles_skipped} already written, {st.points} points, "
@@ -127,9 +127,22 @@ def cmd_check(args: argparse.Namespace) -> None:
     raise SystemExit(cmd(args))
 
 
+def cmd_strain(args: argparse.Namespace) -> None:
+    import json
+
+    from pydvc.post.strain import compute_strain
+
+    outputs = tuple(o for o, flag in (("Lstr", not args.engineering_only), ("Estr", args.engineering or args.engineering_only),
+                                      ("dgrd", args.gradient)) if flag)
+    print(json.dumps(compute_strain(args.results, window=args.window, threshold=args.threshold, refill=args.refill,
+                                    sigma_u=args.sigma_u, out_base=args.out, outputs=outputs), indent=1))
+
+
 def cmd_ccpi(args: argparse.Namespace) -> None:
     """Drop-in for CCPi's ``dvc <dvc_in>``: same inputs, same .disp/.stat outputs, same progress lines for iDVC."""
-    raise todo("M5", "pydvc ccpi")
+    from pydvc.ccpi_dropin import run
+
+    raise SystemExit(run(args.dvc_in, backend=args.backend))
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -186,6 +199,8 @@ def build_parser() -> argparse.ArgumentParser:
         if name == "run":
             s.add_argument("--devices", type=int, nargs="+", help="GPU ordinals (default: every visible GPU)")
             s.add_argument("--cpu-workers", type=int, default=1, help="CPU backends: worker processes sharing the cores")
+            if name == "run":
+                s.add_argument("--max-tiles", type=int, help="solve only the first N tiles (short profiling runs)")
         s.set_defaults(func=func)
 
     s = sub.add_parser("finalize", help="rebuild presence, write metadata and summaries")
@@ -205,14 +220,28 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--no-ccpi", action="store_true", help="skip the CCPi dvc comparison")
     s.set_defaults(func=cmd_selftest)
 
+    s = sub.add_parser("strain", help="strain from displacements (CCPi strain's method and CSV layout, with uncertainty)")
+    s.add_argument("results", help="results store, pyDVC .npz, or CCPi .disp")
+    s.add_argument("--window", "-sw", type=int, default=25, help="points in each strain window (CCPi -sw)")
+    s.add_argument("--threshold", "-t", type=float, default=1.0, help="objmin threshold for window points (CCPi -t)")
+    s.add_argument("--refill", "-r", action="store_true", help="replace dropped points with further neighbours (CCPi -r)")
+    s.add_argument("--engineering", "-E", action="store_true", help="also write engineering strain (.Estr.csv)")
+    s.add_argument("--engineering-only", action="store_true", help="write engineering strain only")
+    s.add_argument("--gradient", "-D", action="store_true", help="also write the displacement gradient (.dgrd.csv)")
+    s.add_argument("--sigma-u", type=float, help="displacement uncertainty (voxels) for strain_sd; default: fit residual")
+    s.add_argument("--out", help="output base name (default: next to RESULTS)")
+    s.set_defaults(func=cmd_strain)
+
     s = sub.add_parser("check", help="local check suite: tests, GPU tests, benchmarks, compared with this machine's baseline")
     from pydvc.bench.check import add_arguments
 
     add_arguments(s)
     s.set_defaults(func=cmd_check)
 
-    s = sub.add_parser("ccpi", help="drop-in replacement for CCPi's `dvc <dvc_in>`")
+    s = sub.add_parser("ccpi", help="drop-in replacement for CCPi's `dvc <dvc_in>` (also installed as pydvc-dvc)")
     s.add_argument("dvc_in")
+    s.add_argument("--backend", choices=["fused", "cupy", "cpu", "numpy"], default=None,
+                   help="default: $PYDVC_BACKEND, else fused on a GPU, else cpu")
     s.set_defaults(func=cmd_ccpi)
 
     return p

@@ -134,10 +134,13 @@ def solve_batch(
 
 
 def _solve_chunk(eng: Any, ref: Any, deformed: Any, centres: Any, seeds: Any, offsets: Any, search: SearchSpec) -> BatchState:
+    from pydvc.profiling import nvtx_range
+
     xp = eng.xp
     B = centres.shape[0]
     st = BatchState.start(xp, eng.dtype, seeds, search.dof)
-    f, ref_inside = eng.sample(ref, centres, xp.zeros((B, 3), dtype=eng.dtype), offsets, search)
+    with nvtx_range("sample reference"):
+        f, ref_inside = eng.sample(ref, centres, xp.zeros((B, 3), dtype=eng.dtype), offsets, search)
     st.status[~ref_inside] = int(PointStatus.RANGE_FAIL)
     if search.threshold is not None:
         th = search.threshold
@@ -154,19 +157,21 @@ def _solve_chunk(eng: Any, ref: Any, deformed: Any, centres: Any, seeds: Any, of
             )
 
     active = st.status == int(PointStatus.GOOD)
-    for _ in range(search.max_iterations):
+    for it in range(search.max_iterations):
         idx = xp.flatnonzero(active)
         if idx.size == 0:
             break
-        sums, outside = eng.sums(deformed, centres, st.params, idx, q, shift, offsets, search)
-        done = eng.update(st, idx, sums, outside, shift, search)
-        active[idx[done]] = False
+        with nvtx_range(f"GN iteration {it}"):
+            sums, outside = eng.sums(deformed, centres, st.params, idx, q, shift, offsets, search)
+            done = eng.update(st, idx, sums, outside, shift, search)
+            active[idx[done]] = False
 
     if bool(active.any()):
         st.status[active] = int(PointStatus.CONVG_FAIL if search.report_convg_fail else PointStatus.GOOD)
     final = xp.flatnonzero((st.status == int(PointStatus.GOOD)) | (st.status == int(PointStatus.CONVG_FAIL)))
     if final.size:
-        g, inside = eng.sample(deformed, centres[final], st.params[final], offsets, search)
+        with nvtx_range("final objective"):
+            g, inside = eng.sample(deformed, centres[final], st.params[final], offsets, search)
         st.objmin[final] = objective(f[final], g, search.objective).astype(eng.dtype)
         st.status[final[~inside]] = int(PointStatus.RANGE_FAIL)
     return st

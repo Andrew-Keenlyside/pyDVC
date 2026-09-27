@@ -80,6 +80,32 @@ __device__ __forceinline__ void row4(const unsigned char* __restrict__ p, long l
     d = (float)(x >> 24);
 }
 
+// Whether the value-only path (sample_values) uses the packed row loads too. gn_sums always does.
+// Measured on an RTX A2000: packing speeds sample_values up for u8 but slows it ~1.4x for u16.
+template <typename T>
+struct PackedValues {
+    static constexpr bool value = true;
+};
+template <>
+struct PackedValues<unsigned short> {
+    static constexpr bool value = false;
+};
+
+// u16 bricks: the four taps span 8 bytes starting at any 2-byte boundary, so three aligned
+// 32-bit loads cover them; two funnel shifts pick the pairs out (4 loads -> 3). The third word
+// can extend up to 4 bytes past voxel i + 3, inside the padding FusedEngine.prepare adds.
+__device__ __forceinline__ void row4(const unsigned short* __restrict__ p, long long i, float& a, float& b, float& c,
+                                     float& d) {
+    const unsigned int* w = reinterpret_cast<const unsigned int*>(p) + (i >> 1);
+    const unsigned int s = (unsigned int)(i & 1) * 16u;
+    const unsigned int w0 = __ldg(w), w1 = __ldg(w + 1), w2 = __ldg(w + 2);
+    const unsigned int lo = __funnelshift_r(w0, w1, s), hi = __funnelshift_r(w1, w2, s);
+    a = (float)(lo & 0xffffu);
+    b = (float)(lo >> 16);
+    c = (float)(hi & 0xffffu);
+    d = (float)(hi >> 16);
+}
+
 __device__ __forceinline__ void catmull_rom(float t, float* w, float* dw) {
     const float t2 = t * t, t3 = t2 * t;
     w[0] = 0.5f * (-t3 + 2.0f * t2 - t);
@@ -147,7 +173,14 @@ __device__ __forceinline__ bool interpolate(const T* __restrict__ brick, const G
         for (int yy = 0; yy < 4; ++yy) {
             const long long row = base + ((long long)zz * ny + yy) * nx;
             float t0, t1, t2, t3;
-            row4(brick, row, t0, t1, t2, t3);
+            if (GRAD || PackedValues<T>::value) {
+                row4(brick, row, t0, t1, t2, t3);
+            } else {
+                t0 = ld(brick, row);
+                t1 = ld(brick, row + 1);
+                t2 = ld(brick, row + 2);
+                t3 = ld(brick, row + 3);
+            }
             const float sx = wx[0] * t0 + wx[1] * t1 + wx[2] * t2 + wx[3] * t3;
             vz += wy[yy] * sx;
             if (GRAD) {

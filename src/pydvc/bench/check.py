@@ -95,18 +95,42 @@ class Finding:
 
 
 def repo_root() -> Path:
+    """The source tree whose tests run: the git checkout, else ``$PYDVC_SRC``, the container's copy, or cwd."""
     try:
         out = subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True, check=True)
         return Path(out.stdout.strip())
     except Exception:
+        for cand in (os.environ.get("PYDVC_SRC"), "/opt/pydvc-src"):
+            if cand and (Path(cand) / "tests").is_dir():
+                return Path(cand)
         return Path.cwd()
+
+
+def out_root(src: Path) -> Path:
+    """Where runs/check goes: ``$PYDVC_CHECK_OUT``, else the source tree if writable (a checkout), else cwd."""
+    env = os.environ.get("PYDVC_CHECK_OUT")
+    if env:
+        return Path(env)
+    return src if os.access(src, os.W_OK) else Path.cwd()
+
+
+def baseline_dir(src: Path) -> Path:
+    """``$PYDVC_BASELINE_DIR`` (e.g. shared storage on a cluster), else the checkout's docs/benchmarks/baselines."""
+    return Path(os.environ.get("PYDVC_BASELINE_DIR") or src / "docs" / "benchmarks" / "baselines")
 
 
 def git_info(root: Path) -> dict[str, Any]:
     def git(*a: str) -> str:
-        return subprocess.run(["git", *a], cwd=root, capture_output=True, text=True).stdout.strip()
+        try:
+            return subprocess.run(["git", *a], cwd=root, capture_output=True, text=True).stdout.strip()
+        except OSError:                          # no git (a container)
+            return ""
 
-    return {"sha": git("rev-parse", "HEAD"), "branch": git("rev-parse", "--abbrev-ref", "HEAD"),
+    sha = git("rev-parse", "HEAD")
+    if not sha:                                  # the container records the commit it was built from
+        commit = os.environ.get("PYDVC_COMMIT", "unknown")
+        return {"sha": commit.removesuffix("-dirty"), "branch": "", "dirty": commit.endswith("-dirty")}
+    return {"sha": sha, "branch": git("rev-parse", "--abbrev-ref", "HEAD"),
             "dirty": bool(git("status", "--porcelain", "--untracked-files=no"))}
 
 
@@ -138,12 +162,84 @@ def gpu_state() -> dict[str, Any]:
     except Exception:
         return state
     state["available"] = True
+    mine = _ancestors()
     state["other_processes"] = [line.strip() for line in apps.splitlines()
-                                if line.strip() and line.split(",")[0].strip() != str(os.getpid())]
+                                if line.strip() and line.split(",")[0].strip() not in mine]
     vals = [v.strip() for v in gpu.splitlines()[0].split(",")] if gpu.strip() else []
     if len(vals) == 4:
         state |= {"temperature_c": vals[0], "sm_clock_mhz": vals[1], "max_sm_clock_mhz": vals[2], "utilization_pct": vals[3]}
     return state
+
+
+def cuda_headers_finding(cupy: Any) -> Finding:
+    """CuPy's CUDA headers must be the same CUDA version as its NVRTC, or its CUB reductions fail to compile.
+
+    With a conda cupy used without activating the environment, CuPy falls back to a system CUDA whose
+    headers are older than the environment's NVRTC (``incomplete type "__nv_fp8_e8m0"``).
+    """
+    import importlib
+    import re
+
+    nvrtc = getattr(cupy.cuda, "nvrtc", None) or importlib.import_module("cupy.cuda.nvrtc")
+    cuda_path = nvrtc_cuda_include(cupy) or str(Path(str(cupy.cuda.get_cuda_path() or "")) / "include")
+    header = Path(cuda_path) / "cuda.h"
+    nv = nvrtc.getVersion()
+    m = re.search(r"#define\s+CUDA_VERSION\s+(\d+)", header.read_text(encoding="utf-8", errors="replace")) if header.exists() else None
+    if m is None:
+        return Finding("CuPy CUDA headers", "fail", f"no cuda.h in {cuda_path!r}, the CUDA include directory CuPy uses")
+    ver = int(m.group(1))
+    hdr = (ver // 1000, (ver % 1000) // 10)
+    if hdr != tuple(nv):
+        hint = " (conda: activate the environment, e.g. conda run -n <env> ...)" if os.environ.get("CONDA_EXE") else ""
+        return Finding("CuPy CUDA headers", "fail",
+                       f"headers at {cuda_path} are CUDA {hdr[0]}.{hdr[1]} but NVRTC is {nv[0]}.{nv[1]}{hint}")
+    return Finding("CuPy CUDA headers", "pass", f"CUDA {hdr[0]}.{hdr[1]} headers and NVRTC at {cuda_path}")
+
+
+def nvrtc_cuda_include(cupy: Any) -> str | None:
+    """The CUDA include directory CuPy actually passes to NVRTC, observed by compiling a throwaway kernel.
+
+    (CuPy decides it in compiled code, and it can differ from ``cupy.cuda.get_cuda_path()``.)
+    """
+    import uuid
+
+    from cupy.cuda import compiler
+
+    seen: list[tuple[str, ...]] = []
+    orig = compiler._NVRTCProgram.compile
+
+    def spy(self: Any, options: tuple[str, ...] = (), *a: Any, **k: Any) -> Any:
+        seen.append(tuple(options))
+        return orig(self, options, *a, **k)
+
+    compiler._NVRTCProgram.compile = spy
+    try:
+        src = f'extern "C" __global__ void pydvc_probe_{uuid.uuid4().hex}(float* x) {{ x[0] = 1.0f; }}'
+        cupy.RawModule(code=src).get_function(src.split("void ")[1].split("(")[0])
+    except Exception:
+        return None
+    finally:
+        compiler._NVRTCProgram.compile = orig
+    for opts in seen:
+        for o in opts:
+            d = o[2:] if o.startswith("-I") else None
+            if d and "cupy" not in d and (Path(d) / "cuda.h").exists():
+                return d
+    return None
+
+
+def _ancestors() -> set[str]:
+    """This process and its ancestors: a parent that holds a GPU context (a campaign driving the check) is not
+    another user of the GPU."""
+    pids, pid = set(), os.getpid()
+    while pid > 1 and str(pid) not in pids:
+        pids.add(str(pid))
+        try:
+            fields = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+            pid = int(fields[1])
+        except (OSError, IndexError, ValueError):
+            break
+    return pids
 
 
 def preflight(tier: str) -> tuple[list[Finding], dict[str, Any]]:
@@ -161,14 +257,7 @@ def preflight(tier: str) -> tuple[list[Finding], dict[str, Any]]:
         else:
             import cupy
 
-            prefix = os.environ.get("CONDA_PREFIX", "")
-            cuda_path = str(cupy.cuda.get_cuda_path() or "")
-            if prefix and cuda_path.startswith(prefix):
-                found.append(Finding("CuPy CUDA headers", "pass", cuda_path))
-            else:
-                found.append(Finding("CuPy CUDA headers", "fail",
-                                     f"CuPy uses {cuda_path!r}, outside CONDA_PREFIX={prefix!r}: activate the "
-                                     "environment (conda run -n <env> ...), or NVRTC mixes CUDA versions"))
+            found.append(cuda_headers_finding(cupy))
         if state["other_processes"]:
             found.append(Finding("GPU idle", "warn", "timings not compared; in use by " + "; ".join(state["other_processes"])))
     return found, state
@@ -434,19 +523,21 @@ def bitwise_findings(steps: list[Step], baseline: dict[str, Any] | None, same_so
 
 
 def baseline_path(root: Path, machine: str) -> Path:
-    return root / "docs" / "benchmarks" / "baselines" / f"{machine}.json"
+    return baseline_dir(root) / f"{machine}.json"
 
 
 def write_baseline(root: Path, machine: str, report: dict[str, Any], steps: list[Step], reason: str,
-                   ccpi_disp: str | None) -> Path:
-    store = root / "runs" / "check" / "baseline"
+                   ccpi_disp: str | None, out: Path | None = None) -> Path:
+    """Baseline JSON in :func:`baseline_dir`; its arrays under ``out``/runs/check/baseline, paths relative to ``out``."""
+    out = out or root
+    store = out / "runs" / "check" / "baseline"
     store.mkdir(parents=True, exist_ok=True)
     arrays = {}
     for s in steps:
         for name, path in s.arrays.items():
             dest = store / Path(path).name
             shutil.copyfile(path, dest)
-            arrays[name] = {"path": str(dest.relative_to(root)), "sha256": sha256(dest)}
+            arrays[name] = {"path": str(dest.relative_to(out)), "sha256": sha256(dest)}
     metrics = {k: v for s in steps for k, v in s.metrics.items()}
     doc = {"machine": machine, "recorded": report["started"], "reason": reason, "git": report["git"],
            "tier": report["tier"], "fingerprint": report["fingerprint"], "metrics": metrics, "arrays": arrays,
@@ -457,15 +548,16 @@ def write_baseline(root: Path, machine: str, report: dict[str, Any], steps: list
     return path
 
 
-def load_baseline(root: Path, machine: str) -> dict[str, Any] | None:
+def load_baseline(root: Path, machine: str, out: Path | None = None) -> dict[str, Any] | None:
+    out = out or root
     path = baseline_path(root, machine)
     if not path.exists():
         return None
     doc = json.loads(path.read_text())
-    for a in doc.get("arrays", {}).values():             # stored relative to the repository
-        a["path"] = str(root / a["path"])
+    for a in doc.get("arrays", {}).values():             # stored relative to the output root
+        a["path"] = str(out / a["path"])
     if doc.get("ccpi_disp") and not Path(doc["ccpi_disp"]).is_absolute():
-        doc["ccpi_disp"] = str(root / doc["ccpi_disp"])
+        doc["ccpi_disp"] = str(out / doc["ccpi_disp"])
     return doc
 
 
@@ -478,19 +570,20 @@ def run(tier: str, *, case_a: str | None = None, cache: str | None = None, machi
     from pydvc.bench import case_a as ca
 
     root = repo_root()
+    out = out_root(root)
     machine = machine or os.environ.get("PYDVC_MACHINE") or socket.gethostname()
     git = git_info(root)
     started = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    run_dir = root / "runs" / "check" / f"{started}-{git['sha'][:7]}{'-dirty' if git['dirty'] else ''}"
+    run_dir = out / "runs" / "check" / f"{started}-{git['sha'][:7]}{'-dirty' if git['dirty'] else ''}"
     run_dir.mkdir(parents=True, exist_ok=True)
-    latest = root / "runs" / "check" / "latest"
+    latest = out / "runs" / "check" / "latest"
     if latest.is_symlink() or latest.exists():
         latest.unlink()
     latest.symlink_to(run_dir.name)
 
     data = ca.data_dir(case_a)
     cache_dir = ca.cache_dir(cache)
-    baseline = load_baseline(root, machine)
+    baseline = load_baseline(root, machine, out)
     pre, state = preflight(tier)
     fp = fingerprint()
     report: dict[str, Any] = {"tier": tier, "machine": machine, "started": started, "git": git, "fingerprint": fp,
@@ -541,7 +634,7 @@ def run(tier: str, *, case_a: str | None = None, cache: str | None = None, machi
         elif not reason:
             say("not updating the baseline: give --reason")
         else:
-            path = write_baseline(root, machine, report, steps, reason, ccpi_disp)
+            path = write_baseline(root, machine, report, steps, reason, ccpi_disp, out)
             report["baseline_written"] = str(path)
             say(f"baseline written: {path}")
     (run_dir / "check.json").write_text(json.dumps(report, indent=1, default=str))

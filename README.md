@@ -22,7 +22,8 @@ format through its GPU backend.
 > systematic errors on real data are measured in the
 > [error-floor study](docs/benchmarks/2026-09-26-error-floor-case-A.md).
 > Multi-GPU (M4 on 8 × H100) is implemented but not yet measured. Local
-> checks: `pydvc check {quick,gpu,full}` ([TESTING.md](docs/TESTING.md)).
+> checks: `pydvc check {quick,gpu,full}` ([TESTING.md](docs/TESTING.md)); cluster runs and the
+> scaling campaign: [CLUSTER.md](docs/CLUSTER.md).
 
 ---
 

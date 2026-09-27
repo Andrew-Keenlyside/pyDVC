@@ -67,15 +67,15 @@ def case_a(data: Path, cache: Path, n_points: int, seed: int = 0) -> Case:
 
 
 def synthetic(n_points: int, seed: int = 0, shape: tuple[int, int, int] = (256, 256, 256),
-              subvolume: SubvolumeSpec | None = None) -> Case:
-    """A u8 speckle volume large enough not to fit in cache; the deformed volume is the same data."""
+              subvolume: SubvolumeSpec | None = None, dtype: str = "uint8") -> Case:
+    """A speckle volume (u8 or u16) large enough not to fit in cache; the deformed volume is the same data."""
     from pydvc.geometry.box import Box
     from pydvc.io.volume import Brick
     from pydvc.synth.phantoms import _to_dtype, speckle_field
 
     subvolume = subvolume or SubvolumeSpec(geometry="sphere", size=80.0, n_samples=8000)
     box = Box((0, 0, 0), shape)
-    vol = _to_dtype(speckle_field(box, seed=seed), np.dtype(np.uint8))
+    vol = _to_dtype(speckle_field(box, seed=seed), np.dtype(dtype))
     brick = Brick(vol, box, box)
     search = SearchSpec(dof=6, objective="znssd", interpolation="tricubic", disp_max=10.0)
     margin = subvolume.size / 2 + 4.0
@@ -83,7 +83,7 @@ def synthetic(n_points: int, seed: int = 0, shape: tuple[int, int, int] = (256, 
     centres = rng.uniform(margin, np.asarray(shape[::-1], dtype=np.float64) - 1.0 - margin, size=(n_points, 3))
     params = np.zeros((n_points, search.dof), dtype=np.float32)
     params[:, :3] = rng.uniform(-1.5, 1.5, size=(n_points, 3))
-    return Case("synthetic", brick, brick, centres, params, subvolume, search)
+    return Case(f"synthetic_{np.dtype(dtype).name}", brick, brick, centres, params, subvolume, search)
 
 
 def _timer(engine: Any):
@@ -174,13 +174,15 @@ def rel_err(got: np.ndarray, want: np.ndarray) -> float:
 
 
 def run(backends: list[str], *, case_a_dir: str | None = None, cache: str | None = None, n_points: int = 2048,
-        repeats: int = 5) -> dict[str, Any]:
+        repeats: int = 5, synthetic_dtype: str | None = None) -> dict[str, Any]:
+    """Case A if available (unless ``synthetic_dtype`` asks for a synthetic volume), else synthetic u8."""
     from pydvc.bench import case_a as ca
     from pydvc.bench.smoke import environment
     from pydvc.geometry.templates import make_template
 
     data = ca.data_dir(case_a_dir)
-    case = case_a(data, ca.cache_dir(cache), n_points) if data else synthetic(n_points)
+    case = (case_a(data, ca.cache_dir(cache), n_points) if data and not synthetic_dtype
+            else synthetic(n_points, dtype=synthetic_dtype or "uint8"))
     return {
         "data": case.data,
         "settings": {"n_points": len(case.centres), "subvolume": dataclasses.asdict(case.subvolume),
@@ -201,9 +203,11 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--cache", help="directory for C-ordered .raw copies (default $PYDVC_CASE_A_CACHE or runs/case_A)")
     p.add_argument("--points", type=int, default=2048)
     p.add_argument("--repeats", type=int, default=5)
+    p.add_argument("--synthetic", choices=["uint8", "uint16"], help="use a synthetic speckle volume of this dtype")
     p.add_argument("--json", help="write the results here")
     args = p.parse_args(argv)
-    res = run(args.backends, case_a_dir=args.case_a, cache=args.cache, n_points=args.points, repeats=args.repeats)
+    res = run(args.backends, case_a_dir=args.case_a, cache=args.cache, n_points=args.points, repeats=args.repeats,
+              synthetic_dtype=args.synthetic)
     for r in res["results"]:
         print(f"{res['data']:9s} {r['backend']:8s} sums {r['sums_us_per_point_iter']:8.2f} µs/point-iter   "
               f"sample {r['sample_us_per_point']:8.2f} µs/point   rel err vs float64 {r['rel_err']:.1e}")

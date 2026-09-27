@@ -1,0 +1,55 @@
+#!/bin/bash
+# The pyDVC scaling campaign on one Grid Engine GPU node (UCL CS pryor, 8x H100), inside pydvc.sif.
+#
+#   1. build the image once on a Linux machine: bash containers/build.sh --help; copy it to shared storage
+#   2. edit SETTINGS below (paths) and, if needed, the #$ resource lines
+#   3. from the pyDVC checkout on the cluster:  qsub sge/benchmark.qsub
+#
+# Override settings at submit time without editing, e.g.
+#   qsub -v SIZE=4096 sge/benchmark.qsub                 # the large case (~275 GB of volumes)
+#   qsub -v STEPS="strong weak" sge/benchmark.qsub       # a subset (see docs/CLUSTER.md)
+#   qsub -pe gpu 4 -v DEVICES="1 2 4" sge/benchmark.qsub # four GPUs
+#
+# Every step writes RESULTS/<step>.json and a finished step is skipped when the job is submitted
+# again, so a job that hits h_rt just continues. Results: RESULTS/campaign.md.
+
+# ---- Grid Engine resources ------------------------------------------------
+#$ -N pydvc_bench
+#$ -l h_rt=12:00:00
+#$ -l gpu=true,gpu_type=h100
+#$ -pe gpu 8                         # GPUs; the campaign scales over 1, 2, 4, 8 of them
+#$ -l tmem=48G                       # PER SLOT: x the slot count above
+#$ -R y
+#$ -o /home/akeenlys/storage_main/bridge_project_data/logs/$JOB_NAME.$JOB_ID.log   # dir must already exist
+#$ -S /bin/bash
+#$ -cwd
+#$ -j y
+
+set -euo pipefail
+
+# ---- SETTINGS -------------------------------------------------------------
+ROOT="${ROOT:-/home/akeenlys/storage_main/bridge_project_data/pydvc}"
+SIF="${SIF:-/home/akeenlys/storage_main/bridge_project_data/containers/pydvc.sif}"
+BINDS="${BINDS:-/home/akeenlys/storage_main/bridge_project_data}"
+DATA="${DATA:-$ROOT/data}"                         # case L is generated here once and reused
+RESULTS="${RESULTS:-$ROOT/results/campaign_size${SIZE:-2048}}"
+SIZE="${SIZE:-2048}"                               # case L edge: 2048 (~16 GB/volume) or 4096 (~137 GB/volume)
+DEVICES="${DEVICES:-}"                             # device counts; empty: 1 2 4 8 up to the GPUs held
+STEPS="${STEPS:-}"                                 # empty: every step
+REDO="${REDO:-}"                                   # steps to run again even if finished
+CASE_A="${CASE_A:-}"                               # optional: case A data dir, for the kernel step on real data
+export PYDVC_BASELINE_DIR="${PYDVC_BASELINE_DIR:-$ROOT/baselines}"
+PYDVC_DEV_SRC="${PYDVC_DEV_SRC:-}"                 # optional: a checkout to use instead of the image's copy
+# ---------------------------------------------------------------------------
+
+mkdir -p "$DATA" "$RESULTS" "$PYDVC_BASELINE_DIR"
+source "${SGE_O_WORKDIR:-$PWD}/sge/common.sh"
+
+args=(--out "$RESULTS" --data-dir "$DATA" --size "$SIZE")
+[ -n "$DEVICES" ] && args+=(--devices $DEVICES)
+[ -n "$STEPS" ] && args+=(--steps $STEPS)
+[ -n "$REDO" ] && args+=(--redo $REDO)
+[ -n "$CASE_A" ] && args+=(--case-a "$CASE_A")
+echo "==== campaign ${args[*]}  $(date -Is)"
+box python -m pydvc.bench.campaign "${args[@]}"
+echo "done $(date -Is); results in $RESULTS/campaign.md"

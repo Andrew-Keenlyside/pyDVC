@@ -39,6 +39,7 @@ class Results:
     seed: np.ndarray           # (N, 3)
     seconds: float = 0.0
     timings: dict[str, float] = field(default_factory=dict)
+    displacement_sd: np.ndarray | None = None   # (N, 3) with uncertainty_seeds > 0 (pydvc.solver.uncertainty)
 
     @property
     def displacement(self) -> np.ndarray:
@@ -53,7 +54,7 @@ class Results:
             path,
             point_id=self.point_id, xyz=self.xyz, status=self.status, objmin=self.objmin,
             params=self.params, displacement=self.displacement, n_iter=self.n_iter, seed=self.seed,
-            seconds=self.seconds,
+            seconds=self.seconds, **({"displacement_sd": self.displacement_sd} if self.displacement_sd is not None else {}),
         )
 
     @classmethod
@@ -62,6 +63,7 @@ class Results:
             return cls(
                 point_id=r["point_id"], xyz=r["xyz"], status=r["status"], objmin=r["objmin"],
                 params=r["params"], n_iter=r["n_iter"], seed=r["seed"], seconds=float(r["seconds"]),
+                displacement_sd=r["displacement_sd"] if "displacement_sd" in r.files else None,
             )
 
     def write_disp(self, path: str | Path) -> None:
@@ -101,11 +103,14 @@ def solve_in_memory(
     seeds: np.ndarray | None = None,
     backend: Backend = "numpy",
     progress: Callable[[str], None] | None = None,
+    on_solved: Callable[[np.ndarray, Results], None] | None = None,
 ) -> Results:
     """Correlate the given points against whole-volume bricks.
 
     ``strategy`` overrides ``cfg.seeding.strategy`` (``rigid`` or ``wavefront``);
     ``seeds`` (N, 3), if given, replaces ``rigid_trans`` for the rigid strategy.
+    ``on_solved(idx, results)`` is called after each batch (each wavefront shell) with the
+    indices just solved, so a caller can report progress point by point (``pydvc ccpi``).
     """
     t0 = time.perf_counter()
     say = progress or (lambda msg: None)
@@ -146,6 +151,8 @@ def solve_in_memory(
         host = {k: (v.get() if hasattr(v, "get") else v) for k, v in vars(out).items()}  # GPU engines return cupy
         res.params[idx], res.status[idx], res.objmin[idx] = host["params"], host["status"], host["objmin"]
         res.n_iter[idx], res.seed[idx] = host["n_iter"], host["seed"]
+        if on_solved is not None:
+            on_solved(np.asarray(idx), res)
 
     t1 = time.perf_counter()
     strategy = strategy or cfg.seeding.strategy
@@ -169,5 +176,12 @@ def solve_in_memory(
     else:
         raise todo("M5", f"{strategy!r} seeding in the in-memory runner (the tiled pipeline runs 'coarse')")
     res.timings = {"read": t_read, "solve": time.perf_counter() - t1}
+    if cfg.uncertainty_seeds > 0:
+        from pydvc.solver.uncertainty import seed_spread
+
+        t2 = time.perf_counter()
+        res.displacement_sd = seed_spread(ref, deformed, res.xyz, res.seed, res.params[:, :3], res.status, cfg.subvolume,
+                                          cfg.search, engine, cfg.uncertainty_seeds)
+        res.timings["uncertainty"] = time.perf_counter() - t2
     res.seconds = time.perf_counter() - t0
     return res

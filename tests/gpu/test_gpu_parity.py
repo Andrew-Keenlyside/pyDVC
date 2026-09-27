@@ -139,19 +139,21 @@ def test_inmemory_wavefront_on_fused_matches_the_cpu_engine(tmp_path):
     np.testing.assert_allclose(out["fused"].params[good, :3], out["cpu"].params[good, :3], atol=1e-3)
 
 
-def test_fused_u8_packed_loads_on_an_odd_sized_misaligned_brick():
-    """The u8 word loads on the GPU, where stencils touch the last bytes of the buffer and the brick starts mid-word."""
+@pytest.mark.parametrize("dtype", [np.uint8, np.uint16])
+def test_fused_packed_loads_on_an_odd_sized_misaligned_brick(dtype):
+    """The u8/u16 word loads on the GPU, where stencils touch the last bytes of the buffer and the brick starts mid-word."""
     import cupy as cp
 
     from test_fused import ODD, _u8_odd_case
     from pydvc.io.volume import is_padded
 
-    ref, deformed, centres = _u8_odd_case()
+    ref, deformed, centres = _u8_odd_case(dtype)
     template = make_template(SubvolumeSpec(geometry="sphere", size=12, n_samples=400))
     search = SearchSpec(dof=6, objective="znssd", interpolation="tricubic", disp_max=3.0)
     seeds = np.zeros((len(centres), 3))
     expected = solve_batch(whole_brick(ref), whole_brick(deformed), centres, seeds, template, search, backend="numpy")
-    view = cp.empty(deformed.nbytes + 1, dtype=cp.uint8)[1:].reshape(ODD)      # misaligned device brick
+    k = deformed.itemsize
+    view = cp.empty(deformed.nbytes + k, dtype=cp.uint8)[k:].view(deformed.dtype).reshape(ODD)   # misaligned brick
     view[...] = cp.asarray(deformed)
     assert not is_padded(view)
     got = solve_batch(whole_brick(cp.asarray(ref)), whole_brick(view), cp.asarray(centres), cp.asarray(seeds),

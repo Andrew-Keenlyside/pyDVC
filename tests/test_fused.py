@@ -124,6 +124,7 @@ def test_cuda_source_compiles_with_nvrtc():
         "pydvc::sample_values<3, 1, unsigned char>",
         "pydvc::gn_sums<6, 4, 2, unsigned char>",          # u8 tricubic: the packed row loads
         "pydvc::sample_values<6, 2, unsigned char>",
+        "pydvc::sample_values<6, 2, unsigned short>",
     ]
     for e in exprs:
         nvrtc.addNameExpression(prog, e)
@@ -137,10 +138,11 @@ def test_cuda_source_compiles_with_nvrtc():
 ODD = (45, 47, 49)       # z, y, x: rows of 49 bytes, so words straddle rows and the buffer ends mid-word
 
 
-def _u8_odd_case():
+def _u8_odd_case(dtype=np.uint8):
     ref = wave_field(ODD)
     deformed = wave_field(ODD, shift_xyz=U)
-    ref, deformed = (np.clip(np.rint((v - 100.0) * (250.0 / 220.0) + 128), 0, 255).astype(np.uint8) for v in (ref, deformed))
+    scale, mid = (250.0 / 220.0, 128) if dtype == np.uint8 else (200.0, 30000)
+    ref, deformed = (np.clip(np.rint((v - 100.0) * scale + mid), 0, np.iinfo(dtype).max).astype(dtype) for v in (ref, deformed))
     hi = np.asarray(ODD[::-1], dtype=np.float64) - 1.0
     rng = np.random.default_rng(11)
     # centres whose tricubic stencils reach (or just miss) the last voxels along x, and the last y/z rows
@@ -150,16 +152,18 @@ def _u8_odd_case():
     return ref, deformed, np.concatenate([corner, faces])
 
 
-def test_u8_packed_row_loads_at_the_end_of_an_odd_sized_brick():
-    """The u8 word loads agree with the numpy reference where stencils touch the last bytes of the buffer."""
+@pytest.mark.parametrize("dtype", [np.uint8, np.uint16])
+def test_packed_row_loads_at_the_end_of_an_odd_sized_brick(dtype):
+    """The u8/u16 word loads agree with the numpy reference where stencils touch the last bytes of the buffer."""
     _emulator_or_skip()
-    ref, deformed, centres = _u8_odd_case()
+    ref, deformed, centres = _u8_odd_case(dtype)
     template = make_template(SubvolumeSpec(geometry="sphere", size=12, n_samples=400))
     search = SearchSpec(dof=6, objective="znssd", interpolation="tricubic", disp_max=3.0)
     seeds = np.zeros((len(centres), 3))
     expected = solve_batch(whole_brick(ref), whole_brick(deformed), centres, seeds, template, search, backend="numpy")
     # hand the engine a view that starts 1 byte into its buffer: prepare must re-align it
-    shifted = np.empty(deformed.nbytes + 1, dtype=np.uint8)[1:].reshape(ODD)
+    raw = np.empty(deformed.nbytes + deformed.itemsize, dtype=np.uint8)[deformed.itemsize:]   # starts mid-word
+    shifted = raw.view(deformed.dtype).reshape(ODD)
     shifted[...] = deformed
     got = solve_batch(whole_brick(ref), whole_brick(shifted), centres, seeds, template, search, backend="emulated")
     good = expected.status == PointStatus.GOOD

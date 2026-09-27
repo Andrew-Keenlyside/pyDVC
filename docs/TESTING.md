@@ -185,6 +185,10 @@ comparison for any configuration (`--truth truth.npz` adds ground truth).
 
 ## 4. Cluster (SLURM, one 8×H100 node)
 
+> On a **Grid Engine** cluster (UCL CS pryor), follow [CLUSTER.md](CLUSTER.md) instead: an Apptainer
+> image, `sge/benchmark.qsub` for the scaling campaign and `sge/pydvc.qsub` for your own data.
+> The SLURM scripts below have not been run.
+
 ```bash
 # the whole M4 sequence on case L: generate, storage baseline, Q2, Q3, end to end, accuracy
 sbatch scripts/slurm/case_L.sbatch 2048 /scratch/$USER/pydvc/caseL2048

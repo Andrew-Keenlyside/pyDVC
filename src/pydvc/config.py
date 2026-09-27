@@ -102,6 +102,7 @@ class RunConfig:
     seeding: SeedingSpec = field(default_factory=SeedingSpec)
     cluster: ClusterSpec = field(default_factory=ClusterSpec)
     num_points_to_process: int | None = None   # num_points_to_process
+    uncertainty_seeds: int = 0           # >0: repeat each GOOD point with this many other template seeds (displacement_sd)
     workdir: str = "runs/default"        # plan.json, seed field, logs, .stat
 
     @classmethod
