@@ -127,6 +127,17 @@ def cmd_check(args: argparse.Namespace) -> None:
     raise SystemExit(cmd(args))
 
 
+def cmd_strain(args: argparse.Namespace) -> None:
+    import json
+
+    from pydvc.post.strain import compute_strain
+
+    outputs = tuple(o for o, flag in (("Lstr", not args.engineering_only), ("Estr", args.engineering or args.engineering_only),
+                                      ("dgrd", args.gradient)) if flag)
+    print(json.dumps(compute_strain(args.results, window=args.window, threshold=args.threshold, refill=args.refill,
+                                    sigma_u=args.sigma_u, out_base=args.out, outputs=outputs), indent=1))
+
+
 def cmd_ccpi(args: argparse.Namespace) -> None:
     """Drop-in for CCPi's ``dvc <dvc_in>``: same inputs, same .disp/.stat outputs, same progress lines for iDVC."""
     from pydvc.ccpi_dropin import run
@@ -208,6 +219,18 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--backends", nargs="+", help="default: every backend available here")
     s.add_argument("--no-ccpi", action="store_true", help="skip the CCPi dvc comparison")
     s.set_defaults(func=cmd_selftest)
+
+    s = sub.add_parser("strain", help="strain from displacements (CCPi strain's method and CSV layout, with uncertainty)")
+    s.add_argument("results", help="results store, pyDVC .npz, or CCPi .disp")
+    s.add_argument("--window", "-sw", type=int, default=25, help="points in each strain window (CCPi -sw)")
+    s.add_argument("--threshold", "-t", type=float, default=1.0, help="objmin threshold for window points (CCPi -t)")
+    s.add_argument("--refill", "-r", action="store_true", help="replace dropped points with further neighbours (CCPi -r)")
+    s.add_argument("--engineering", "-E", action="store_true", help="also write engineering strain (.Estr.csv)")
+    s.add_argument("--engineering-only", action="store_true", help="write engineering strain only")
+    s.add_argument("--gradient", "-D", action="store_true", help="also write the displacement gradient (.dgrd.csv)")
+    s.add_argument("--sigma-u", type=float, help="displacement uncertainty (voxels) for strain_sd; default: fit residual")
+    s.add_argument("--out", help="output base name (default: next to RESULTS)")
+    s.set_defaults(func=cmd_strain)
 
     s = sub.add_parser("check", help="local check suite: tests, GPU tests, benchmarks, compared with this machine's baseline")
     from pydvc.bench.check import add_arguments

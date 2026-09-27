@@ -56,4 +56,8 @@ line for line apart from the output name and the version line.
 
 ## Strain
 
-CCPi's `strain` program reads `.disp` files, so it works unchanged on pyDVC's output.
+CCPi's `strain` program reads `.disp` files, so it works unchanged on pyDVC's output. pyDVC's own
+`pydvc strain RESULTS` (a results store, `.npz` or `.disp`) uses the same method, flags and CSV layout
+(`-sw`, `-t`, `-r`, `-E`, `-D`; `<base>-sw25.Lstr.csv` etc.), and matches CCPi's values at every interior
+point of case A. It adds a strain uncertainty per point (`sd_*` columns) and returns NaN for windows whose
+points cannot determine the fit, where CCPi returns an ill-determined value.
