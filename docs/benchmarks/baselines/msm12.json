@@ -1,10 +1,10 @@
 {
  "machine": "msm12",
- "recorded": "20260926T181401Z",
- "reason": "stage 1: sorted templates, packed u8 loads, upload once; first baseline",
+ "recorded": "20260927T010302Z",
+ "reason": "develop: prefiltered step, u16 packing, drop-in, strain, uncertainty",
  "git": {
-  "sha": "8846b26aa42739e87f1da11f3af8722f7ba039b9",
-  "branch": "stage1-trust",
+  "sha": "9bb80394c6486bf3fd87a1c41ef429c927382796",
+  "branch": "develop",
   "dirty": false
  },
  "tier": "full",
@@ -47,23 +47,23 @@
    "value": 0.001415110212451298
   },
   "kernel.case_a.fused.sums_us": {
-   "value": 4.021999891847372,
-   "cv": 0.09302951087694021
+   "value": 3.659999929368496,
+   "cv": 0.06200645766107271
   },
   "kernel.case_a.fused.sample_us": {
-   "value": 7.231452967971563,
-   "cv": 0.026407486436533813
+   "value": 7.209484465420246,
+   "cv": 0.024939860194053014
   },
   "kernel.case_a.cpu.sums_us": {
-   "value": 153.38426317157428,
-   "cv": 0.02083455297882703
+   "value": 145.12370606212244,
+   "cv": 0.0407741040699628
   },
   "kernel.case_a.cpu.sample_us": {
-   "value": 117.80402635963583,
-   "cv": 0.04549011577263617
+   "value": 119.44001366259727,
+   "cv": 0.023621597191262316
   },
   "casea.fused.seconds": {
-   "value": 1.6739255760330707
+   "value": 1.3578076499979943
   },
   "casea.fused.ccpi.median": {
    "value": 0.05117846055229583
@@ -75,7 +75,7 @@
    "value": 0.9888888888888889
   },
   "casea.cpu.seconds": {
-   "value": 12.025814442022238
+   "value": 8.142522656009533
   },
   "casea.cpu.ccpi.median": {
    "value": 0.05117882178181922
@@ -86,8 +86,20 @@
   "casea.cpu.ccpi.status_agreement": {
    "value": 0.9888888888888889
   },
+  "casea_pf1.fused.seconds": {
+   "value": 11.060879911005031
+  },
+  "casea_pf1.fused.ccpi.median": {
+   "value": 0.04847651195253489
+  },
+  "casea_pf1.fused.ccpi.p95": {
+   "value": 0.146151867084992
+  },
+  "casea_pf1.fused.ccpi.status_agreement": {
+   "value": 0.9888888888888889
+  },
   "e2e.casea_grid24.fused.seconds": {
-   "value": 6.522198877995834
+   "value": 6.173015637963545
   }
  },
  "arrays": {
@@ -98,6 +110,10 @@
   "casea.cpu": {
    "path": "runs/check/baseline/casea_cpu.npz",
    "sha256": "a87ae314a384091a5c8f91210dafc6208d0cfc73064f3fbf1617dcc3bca668f2"
+  },
+  "casea_pf1.fused": {
+   "path": "runs/check/baseline/casea_pf1_fused.npz",
+   "sha256": "a921387205690c8890977ec0becc7386099b98ddbc7a5ec80f66cd10e6599453"
   }
  },
  "ccpi_disp": "runs/case_A/ccpi_ccpi-dvc-22.0.0/t32_p1.disp"
