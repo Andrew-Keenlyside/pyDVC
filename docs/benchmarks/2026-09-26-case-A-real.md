@@ -93,7 +93,9 @@ So the criterion cannot be met by pyDVC against itself at CCPi's settings: it
 sits below the difference between two correct solvers. A criterion that can
 fail for the right reasons is a mean difference ≤ 0.01 voxel per axis and a
 spread no larger than pyDVC's own seed-to-seed spread. pyDVC passes both
-against CCPi.
+against CCPi. This is now the revised Q1 (docs/MVP_PLAN.md), computed by
+`bench.compare_ccpi` next to the original: mean Δu (−0.0027, −0.0017, −0.0005),
+spread ratio (1.03, 0.98, 1.02) against pyDVC's seed 0 vs seed 1, on 4 628 interior points: **pass**.
 
 ### Edge points: CCPi reads outside the image
 

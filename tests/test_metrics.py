@@ -60,3 +60,25 @@ def test_edge_mask_flags_subvolumes_that_leave_the_volume():
     disp = np.array([[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [44.0, 0.0, 0.0], [0.0, 0.0, 0.0]])
     # volume 100^3, reach 6: the second point leaves at x = 101, the third only after moving, the fourth at x = -3
     np.testing.assert_array_equal(edge_mask(xyz, disp, (100, 100, 100), 6.0), [False, True, True, True])
+
+
+def test_revised_q1_judges_bias_and_spread_against_pydvcs_own():
+    from pydvc.bench.compare_ccpi import revised_q1
+
+    rng = np.random.default_rng(0)
+    n = 4000
+    ids = np.arange(n)
+    truth = rng.normal(size=(n, 3))
+    ours = truth + rng.normal(scale=0.03, size=(n, 3))
+    alt = truth + rng.normal(scale=0.03, size=(n, 3))
+
+    def res(d):
+        return {"point_id": ids, "status": np.zeros(n, dtype=np.int8), "displacement": d}
+
+    idx, sel = np.arange(n), np.ones(n, dtype=bool)
+    same = revised_q1(res(ours), res(truth + rng.normal(scale=0.03, size=(n, 3))), res(alt), idx, idx, sel)
+    assert same["pass"] and max(same["spread_ratio"]) < 1.1
+    biased = revised_q1(res(ours), res(truth + [0.02, 0, 0] + rng.normal(scale=0.03, size=(n, 3))), res(alt), idx, idx, sel)
+    assert not biased["pass"] and abs(biased["mean_diff"][0]) > 0.015
+    noisy = revised_q1(res(ours), res(truth + rng.normal(scale=0.06, size=(n, 3))), res(alt), idx, idx, sel)
+    assert not noisy["pass"] and min(noisy["spread_ratio"]) > 1.25

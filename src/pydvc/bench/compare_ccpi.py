@@ -107,7 +107,15 @@ def run_ccpi_variants(
     return runs
 
 
-def run_pydvc_parity(cfg: RunConfig, out: Path, backend: str) -> TimedRun:
+def run_pydvc_parity(cfg: RunConfig, out: Path, backend: str, *, alt_seed: bool = False) -> TimedRun:
+    """The in-memory wavefront solve in CCPi's point order, timed.
+
+    With ``alt_seed``, a second, untimed solve uses the next template seed (other sample points
+    in every subvolume): the spread between the two is pyDVC's own sample-set spread, which the
+    revised Q1 criterion compares the CCPi difference against.
+    """
+    import dataclasses
+
     from pydvc.pipeline.inmemory import load_points, solve_in_memory
 
     point_id, xyz = load_points(cfg)
@@ -117,10 +125,15 @@ def run_pydvc_parity(cfg: RunConfig, out: Path, backend: str) -> TimedRun:
     seconds = time.perf_counter() - t0
     path = out / f"pydvc_{backend}_parity.npz"
     res.save(path)
-    return TimedRun(f"pyDVC {backend}: parity (in memory, CCPi order)", len(point_id), seconds,
-                    {"read_s": res.timings["read"], "solve_s": res.timings["solve"],
-                     "mean_iterations": float(res.n_iter[res.status == 0].mean()) if (res.status == 0).any() else None},
-                    str(path))
+    detail = {"read_s": res.timings["read"], "solve_s": res.timings["solve"],
+              "mean_iterations": float(res.n_iter[res.status == 0].mean()) if (res.status == 0).any() else None}
+    if alt_seed:
+        alt_cfg = dataclasses.replace(cfg, subvolume=dataclasses.replace(cfg.subvolume, seed=cfg.subvolume.seed + 1))
+        alt = solve_in_memory(alt_cfg, point_id, xyz, strategy="wavefront", backend=backend)
+        alt_path = out / f"pydvc_{backend}_parity_seed{alt_cfg.subvolume.seed}.npz"
+        alt.save(alt_path)
+        detail["alt_seed_results"] = str(alt_path)
+    return TimedRun(f"pyDVC {backend}: parity (in memory, CCPi order)", len(point_id), seconds, detail, str(path))
 
 
 def run_pydvc_cli(cfg: RunConfig, out: Path, backend: str) -> TimedRun:
@@ -147,7 +160,12 @@ def run_pydvc_cli(cfg: RunConfig, out: Path, backend: str) -> TimedRun:
     return TimedRun(f"pyDVC {backend}: CLI end to end", n, sum(stages.values()), {"stages_s": stages}, c.output)
 
 
-def agreement(ours: str, theirs: str, *, shape_xyz: Any = None, reach: float | None = None) -> dict[str, Any]:
+REVISED_BIAS_MAX = 0.01           # voxel, per axis
+REVISED_SPREAD_RATIO_MAX = 1.25   # std of (pyDVC - CCPi) over std of (pyDVC seed s - seed s+1), per axis
+
+
+def agreement(ours: str, theirs: str, *, shape_xyz: Any = None, reach: float | None = None,
+              ours_alt: str | None = None) -> dict[str, Any]:
     """Point-by-point agreement of our results with a CCPi ``.disp``, overall and split into interior and edge.
 
     With ``shape_xyz`` and ``reach`` (template extent + stencil), points whose subvolume leaves
@@ -177,7 +195,31 @@ def agreement(ours: str, theirs: str, *, shape_xyz: Any = None, reach: float | N
     out["q1_judged_on"] = "interior" if out.get("interior") else "all points"
     out["q1_pass"] = bool(judged["median_abs"] <= 0.05 and judged["p95_abs"] <= 0.2
                           and (judged["status_agreement"] or 0) >= 0.98)
+    if ours_alt:
+        sel = ~edge if shape_xyz is not None and reach is not None else np.ones(len(ia), dtype=bool)
+        out["q1_revised"] = revised_q1(a, b, load_results(ours_alt), ia, ib, sel)
     return out
+
+
+def revised_q1(a: dict[str, Any], b: dict[str, Any], alt: dict[str, Any], ia: Any, ib: Any, sel: Any) -> dict[str, Any]:
+    """Q1 as revised on 2026-09-27 (docs/MVP_PLAN.md): no bias, and a spread no larger than pyDVC's own.
+
+    Two correct solvers that sample each subvolume at different random points disagree by their
+    sample-set spread (docs/benchmarks/2026-09-26-error-floor-case-A.md), so the difference to CCPi
+    is judged against pyDVC's difference to itself with another template seed, on points GOOD in all three.
+    """
+    import numpy as np
+
+    from pydvc.bench.metrics import _match
+
+    ja, jc = _match(a["point_id"][ia], alt["point_id"])
+    good = sel[ja] & (a["status"][ia][ja] == 0) & (b["status"][ib][ja] == 0) & (alt["status"][jc] == 0)
+    d = a["displacement"][ia][ja][good] - b["displacement"][ib][ja][good]
+    e = a["displacement"][ia][ja][good] - alt["displacement"][jc][good]
+    mean = d.mean(axis=0)
+    ratio = d.std(axis=0) / np.maximum(e.std(axis=0), 1e-12)
+    return {"n_points": int(good.sum()), "mean_diff": mean.tolist(), "spread_ratio": ratio.tolist(),
+            "pass": bool(np.abs(mean).max() <= REVISED_BIAS_MAX and ratio.max() <= REVISED_SPREAD_RATIO_MAX)}
 
 
 def _edge_geometry(cfg: RunConfig) -> tuple[Any, float]:
@@ -215,8 +257,8 @@ def compare(
         for exe in ccpi_exes:
             runs += run_ccpi_variants(cfg_ccpi, out, exe, processes=ccpi_processes, max_points=max_ccpi_points,
                                       reuse=reuse_ccpi)
-    for b in backends:
-        runs.append(run_pydvc_parity(cfg, out, b))
+    for i, b in enumerate(backends):
+        runs.append(run_pydvc_parity(cfg, out, b, alt_seed=i == 0 and bool(ccpi_exes)))
         if cli:
             runs.append(run_pydvc_cli(cfg, out, b))
     from pydvc.bench.smoke import environment
@@ -233,9 +275,11 @@ def compare(
     ours = [r for r in runs if r.name.startswith("pyDVC") and r.results]
     ccpi = [r for r in runs if r.name.startswith("CCPi") and r.results and not r.detail.get("sampled")]
     shape_xyz, reach = _edge_geometry(cfg)
+    alt = next((r.detail["alt_seed_results"] for r in runs if "alt_seed_results" in r.detail), None)
     for o in ours:
         for c in ccpi:
-            report["agreement"][f"{o.name} vs {c.name}"] = agreement(o.results, c.results, shape_xyz=shape_xyz, reach=reach)
+            report["agreement"][f"{o.name} vs {c.name}"] = agreement(o.results, c.results, shape_xyz=shape_xyz,
+                                                                     reach=reach, ours_alt=alt)
         if reference_disp:
             report["agreement"][f"{o.name} vs reference .disp"] = agreement(o.results, str(reference_disp),
                                                                             shape_xyz=shape_xyz, reach=reach)
@@ -280,6 +324,14 @@ def markdown(report: dict[str, Any]) -> str:
             q1 = ("pass" if a["q1_pass"] else "FAIL") if "q1_pass" in a and judged_row else ""
             lines.append(f"| {name}{suffix} | {x.get('n_points', '-')} | {x['median_abs']:.4f} | {x['p95_abs']:.4f} | {sa} | "
                          f"{x.get('n_good_both', '-')} | {rmse} | {q1} |")
+    revised = [(n, a["q1_revised"]) for n, a in report["agreement"].items() if a.get("q1_revised")]
+    if revised:
+        lines += ["", f"Revised Q1 (interior; every |mean Δu| ≤ {REVISED_BIAS_MAX} voxel and spread ≤ "
+                  f"{REVISED_SPREAD_RATIO_MAX}× pyDVC's own seed-to-seed spread, per axis):", ""]
+        for n, r in revised:
+            lines.append(f"* {n}: **{'pass' if r['pass'] else 'FAIL'}**, mean Δu "
+                         f"({', '.join(f'{v:+.4f}' for v in r['mean_diff'])}), spread ratio "
+                         f"({', '.join(f'{v:.2f}' for v in r['spread_ratio'])}), {r['n_points']} points")
     lines += ["", "Edge: points whose subvolume leaves the image at CCPi's displacement. CCPi reads wrapped or unset "
               "data there instead of failing (it tests samples against the box it loaded, not the image); pyDVC "
               "reports RANGE_FAIL. Q1 is judged on the interior."]

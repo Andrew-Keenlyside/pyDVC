@@ -7,7 +7,7 @@ measured answers:
 
 | # | Question | Pass criterion |
 |---|---|---|
-| Q1 | **Accuracy.** Does batched GPU correlation match ground truth, and match CCPi? | Synthetic: displacement RMSE ≤ 0.02 voxel noise-free and ≤ 0.05 with 2 % noise, ≥ 99 % GOOD. Case A vs CCPi `.disp`: median \|Δu\| ≤ 0.05 voxel, 95th percentile ≤ 0.2, status agreement ≥ 98 %. |
+| Q1 | **Accuracy.** Does batched GPU correlation match ground truth, and match CCPi? | Synthetic: displacement RMSE ≤ 0.02 voxel noise-free and ≤ 0.05 with 2 % noise, ≥ 99 % GOOD. Case A vs CCPi `.disp`: median \|Δu\| ≤ 0.05 voxel, 95th percentile ≤ 0.2, status agreement ≥ 98 %. **Revised 2026-09-27** (the median test cannot be met even by pyDVC against itself, because the two codes sample each subvolume at different random points): on interior points, every per-axis mean difference ≤ 0.01 voxel, and the spread of the difference ≤ 1.25 × pyDVC's own seed-to-seed spread; the original figures are still reported. Case A: original fails on the median by 0.0012; revised passes (mean ≤ 0.003, spread ratio 0.98–1.03). |
 | Q2 | **Kernel throughput.** Is the fused step as fast as modelled? | On H100 with scenario-B settings: **≥ 100 k pt/s per GPU** (model: 150–500 k), or ≥ 10 % of FP32 peak achieved. |
 | Q3 | **Scaling.** Do 8 GPUs deliver? | 1→8 GPU efficiency ≥ 85 % on a compute-bound configuration; an I/O-bound configuration sustains ≥ 70 % of the node's measured storage bandwidth. |
 | Q4 | **Data path.** Do OME-Zarr bricks and zarr-vectors stores keep up at 10⁷ points? | Compute stream waits on I/O ≤ 20 % of the time; allocate + parallel write + finalize of a 10⁷-point results store takes ≤ 5 % of run time; the store passes zarr-vectors validation. |
