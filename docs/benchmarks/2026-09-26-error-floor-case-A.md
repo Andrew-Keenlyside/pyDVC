@@ -190,8 +190,11 @@ refused. `pydvc check full` includes a prefiltered central-grid step.
 * **For users.** On data like this, precision is set by the sample count.
   CCPi's default of 8 000 gives ~0.03 voxel per axis; 32 000 gives ~0.016 at
   about 4× the solve time, still seconds for a few thousand points on a GPU.
-  pyDVC should report this sampling uncertainty with results (a follow-up:
-  repeat solves with other seeds, or use the Gauss–Newton covariance).
+  pyDVC reports this sampling uncertainty with results when asked:
+  `uncertainty_seeds: 2` in the run config repeats each GOOD point with two
+  other template seeds and stores the per-axis spread as `displacement_sd`
+  (case A: RMS 0.033, 0.031, 0.032 voxel, matching section 3; 0.3 s extra on
+  the central grid). `pydvc strain` propagates it into a strain uncertainty.
 * **For validation.** The Q1 criterion "median |Δu| ≤ 0.05 against CCPi" is
   set below the difference between two correct solvers at CCPi's own
   settings. A criterion that can fail for the right reasons: mean difference

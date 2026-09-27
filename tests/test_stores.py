@@ -5,7 +5,7 @@ import pytest
 
 from pydvc.io.ccpi import write_roi
 from pydvc.io.pointcloud import PointCloud, bin_index, import_points, write_pointcloud_store
-from pydvc.io.results import RESULT_ATTRIBUTES, ResultStore
+from pydvc.io.results import OPTIONAL_ATTRIBUTES, RESULT_ATTRIBUTES, ResultStore
 
 BOUNDS = ((0.0, 0.0, 0.0), (256.0, 256.0, 256.0))
 rng = np.random.default_rng(11)
@@ -88,7 +88,8 @@ def test_results_store_three_phase_write(cloud, tmp_path):
     assert store.written_cells() == set(cells)              # visible before finalize (deferred presence)
     store.finalize(n_points=cloud.n_points)
     back = ResultStore(out).read_all()
-    assert set(back) == {"xyz"} | set(RESULT_ATTRIBUTES)
+    assert set(back) == {"xyz"} | set(RESULT_ATTRIBUTES) | set(OPTIONAL_ATTRIBUTES)
+    assert np.isnan(back["displacement_sd"]).all()          # optional, not computed by these fake results
     assert sorted(back["point_id"].tolist()) == IDS.tolist()
     np.testing.assert_array_equal(back["params"][:, 3], back["point_id"].astype(np.float32))
     np.testing.assert_allclose(back["displacement"], back["xyz"] * 0.01, rtol=1e-6)

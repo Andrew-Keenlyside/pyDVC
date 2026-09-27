@@ -182,6 +182,8 @@ class TileWorker:
             "n_iter": np.zeros(n, dtype=np.uint8),
             "seed": seeds.astype(np.float32),
         }
+        from pydvc.profiling import nvtx_range
+
         ref, deformed = self.engine.prepare(loaded.ref), self.engine.prepare(loaded.deformed)   # once per tile
         for batch in iter_batches(morton_order(xyz), self._batch_size(n)):
             res = solve_batch(ref, deformed, xyz[batch], seeds[batch], self.template, self.cfg.search, engine=self.engine)
@@ -191,6 +193,13 @@ class TileWorker:
             out["status"][batch] = _host(res.status)
             out["objmin"][batch] = _host(res.objmin)
             out["n_iter"][batch] = _host(res.n_iter)
+        if self.cfg.uncertainty_seeds > 0:
+            from pydvc.solver.uncertainty import seed_spread
+
+            with nvtx_range(f"uncertainty tile {loaded.tile.id}"):
+                out["displacement_sd"] = seed_spread(ref, deformed, xyz, seeds, out["displacement"], out["status"],
+                                                     self.cfg.subvolume, self.cfg.search, self.engine,
+                                                     self.cfg.uncertainty_seeds).astype(np.float32)
         return out
 
     # -------------------------------------------------------------- loop

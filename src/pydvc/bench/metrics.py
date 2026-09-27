@@ -51,7 +51,8 @@ def load_results(path: str | Path) -> dict[str, np.ndarray]:
     path = Path(path)
     if path.suffix == ".npz":
         with np.load(path) as r:
-            return {k: r[k] for k in ("point_id", "xyz", "status", "objmin", "displacement")}
+            keys = ["point_id", "xyz", "status", "objmin", "displacement"] + (["displacement_sd"] if "displacement_sd" in r.files else [])
+            return {k: r[k] for k in keys}
     if path.suffix == ".disp":
         from pydvc.io.ccpi import read_disp
 
@@ -66,8 +67,11 @@ def load_results(path: str | Path) -> dict[str, np.ndarray]:
     from pydvc.io.results import ResultStore
 
     r = ResultStore(path).read_all()
-    return {"point_id": r["point_id"], "xyz": r["xyz"].astype(np.float64), "status": r["status"],
-            "objmin": r["objmin"], "displacement": r["displacement"].astype(np.float64)}
+    out = {"point_id": r["point_id"], "xyz": r["xyz"].astype(np.float64), "status": r["status"],
+           "objmin": r["objmin"], "displacement": r["displacement"].astype(np.float64)}
+    if "displacement_sd" in r:
+        out["displacement_sd"] = r["displacement_sd"].astype(np.float64)
+    return out
 
 
 def _match(a_ids: np.ndarray, b_ids: np.ndarray) -> tuple[np.ndarray, np.ndarray]:

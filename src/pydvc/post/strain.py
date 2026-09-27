@@ -116,7 +116,7 @@ def fit_strain(xyz: Any, displacement: Any, status: Any, objmin: Any = None, *, 
         g = np.zeros((len(w), 3, 3))
         gv = np.zeros((len(w), 3, 3))
         s = scale[:, 0, 0]
-        sc2 = (sig[sl] if sig is not None else rms) ** 2                         # (B, 3) displacement variance
+        sc2 = rms ** 2 if sig is None else np.where(np.isfinite(sig[sl]), sig[sl], rms) ** 2   # (B, 3) displacement variance
         for j, a in enumerate(axes):
             g[:, :, a] = par[:, lin[j], :] / s[:, None]
             gv[:, :, a] = sc2 * Ainv[:, lin[j], lin[j]][:, None] / (s[:, None] ** 2)
@@ -187,6 +187,8 @@ def compute_strain(results: str | Path, *, window: int = 25, threshold: float = 
     from pydvc.bench.metrics import load_results
 
     res = load_results(results)
+    if sigma_u is None and "displacement_sd" in res:              # the run's repeat-solve uncertainty, per point
+        sigma_u = res["displacement_sd"]
     r = fit_strain(res["xyz"], res["displacement"], res["status"], res.get("objmin"), window=window,
                    threshold=threshold, refill=refill, sigma_u=sigma_u)
     src = Path(results)

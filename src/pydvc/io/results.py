@@ -57,6 +57,11 @@ RESULT_ATTRIBUTES: dict[str, tuple[str, int | None]] = {
     "seed": ("float32", 3),
     "status": ("int8", 1),           # written last: a cell with a status is complete (see written_cells)
 }
+# Written when present in a tile's results; stores created before an attribute existed simply lack it,
+# and a cell counts as written without them (written_cells looks at RESULT_ATTRIBUTES only).
+OPTIONAL_ATTRIBUTES: dict[str, tuple[str, int]] = {
+    "displacement_sd": ("float32", 3),   # per-axis sd over repeat solves (uncertainty_seeds; NaN otherwise)
+}
 _ATTR = "pydvc_results"          # root attribute holding the run's layout (dof, grid, source points)
 
 
@@ -93,6 +98,7 @@ class ResultStore:
         that a resumed or repaired run refuses to mix subvolume templates (:meth:`check_template`).
         """
         attrs = {name: (dtype, dof if ncols is None else ncols) for name, (dtype, ncols) in RESULT_ATTRIBUTES.items()}
+        attrs |= OPTIONAL_ATTRIBUTES
         allocate_store(path, bounds=points.bounds, chunk_shape=points.chunk_shape, bin_shape=points.bin_shape, attributes=attrs)
         meta = {
             "dof": dof,
@@ -102,6 +108,7 @@ class ResultStore:
             "n_points": points.n_points,
             "template_digest": template_digest,
             "prefilter_sigma": float(prefilter_sigma),
+            "optional_attributes": sorted(OPTIONAL_ATTRIBUTES),
         }
         _root_attrs(str(path), "r+")[_ATTR] = meta
         return cls(path, mode="r+")
@@ -135,9 +142,16 @@ class ResultStore:
             raise ValueError(f"missing result attributes {sorted(missing)}")
         host["point_id"] = np.asarray(tile.point_id.get() if hasattr(tile.point_id, "get") else tile.point_id)
         xyz = np.asarray(tile.xyz.get() if hasattr(tile.xyz, "get") else tile.xyz)
+        optional = [n for n in self.meta.get("optional_attributes", []) if n in OPTIONAL_ATTRIBUTES]
+        n_rows = len(host["point_id"])
+        for name in optional:                            # NaN when a run did not compute it
+            if name not in host:
+                host[name] = np.full((n_rows, OPTIONAL_ATTRIBUTES[name][1]), np.nan)
         for i, cell in enumerate(tile.cells):
             lo, hi = int(tile.cell_offsets[i]), int(tile.cell_offsets[i + 1])
-            attrs = {name: host[name][lo:hi].astype(dtype) for name, (dtype, _) in RESULT_ATTRIBUTES.items()}
+            attrs = {name: host[name][lo:hi].astype(dtype) for name, (dtype, _) in RESULT_ATTRIBUTES.items() if name != "status"}
+            attrs |= {name: host[name][lo:hi].astype(OPTIONAL_ATTRIBUTES[name][0]) for name in optional}
+            attrs["status"] = host["status"][lo:hi].astype(RESULT_ATTRIBUTES["status"][0])   # last: marks the cell complete
             write_cell(self._level, cell, xyz[lo:hi], attrs, np.asarray(tile.bin_offsets[i]))
 
     def written_cells(self) -> set[CellCoord]:
@@ -172,6 +186,13 @@ class ResultStore:
             cols = self.dof if ncols is None else ncols
             data = np.asarray(batch[f"vertex_attributes/{name}"].data, dtype=dtype)
             out[name] = data.reshape(-1, cols) if cols > 1 else data.reshape(-1)
+        optional = [n for n in self.meta.get("optional_attributes", []) if n in OPTIONAL_ATTRIBUTES]
+        if optional and cells:
+            extra = zb.read_cells(self._level, np.asarray(cells, dtype=np.int64).reshape(-1, 3),
+                                  [f"vertex_attributes/{n}" for n in optional], on_error="raise")
+            for name in optional:
+                dtype, cols = OPTIONAL_ATTRIBUTES[name]
+                out[name] = np.asarray(extra[f"vertex_attributes/{name}"].data, dtype=dtype).reshape(-1, cols)
         return out
 
     def finalize(self, *, n_points: int, pyramid: bool = False) -> None:
