@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from pydvc.config import RunConfig
+from zvdvc.config import RunConfig
 
 CONFIGS = sorted((Path(__file__).parents[1] / "configs").glob("*.yaml"))
 

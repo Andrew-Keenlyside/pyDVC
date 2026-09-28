@@ -1,5 +1,5 @@
-# Shared by the sge/*.qsub jobs: run pyDVC inside pydvc.sif under Grid Engine (UCL CS, e.g. pryor).
-# Sourced from the job, which is submitted from the pyDVC checkout (qsub -cwd). Expects SIF and BINDS;
+# Shared by the sge/*.qsub jobs: run zvDVC inside zvdvc.sif under Grid Engine (UCL CS, e.g. pryor).
+# Sourced from the job, which is submitted from the zvDVC checkout (qsub -cwd). Expects SIF and BINDS;
 # defines box (run a command in the container) and runs a preflight that fails in seconds, not after
 # the queue wait, if the GPUs, the image or the paths are wrong.
 
@@ -11,11 +11,11 @@ echo "sif=$SIF"
 RUNTIME=$(command -v apptainer || command -v singularity) \
     || { echo "FATAL: no apptainer/singularity (try: module load apptainer)" >&2; exit 1; }
 
-# Node-local scratch for CuPy's compiled kernels and pyDVC's caches, never the shared file system:
+# Node-local scratch for CuPy's compiled kernels and zvDVC's caches, never the shared file system:
 # the image is read-only, and a shared cache written by concurrent jobs corrupts.
-export TMPDIR="${TMPDIR:-/tmp/pydvc.$$}"
-CACHE="$TMPDIR/pydvc-cache"
-mkdir -p "$CACHE/cupy" "$CACHE/pydvc"
+export TMPDIR="${TMPDIR:-/tmp/zvdvc.$$}"
+CACHE="$TMPDIR/zvdvc-cache"
+mkdir -p "$CACHE/cupy" "$CACHE/zvdvc"
 
 # --cleanenv keeps the host's modules and ~/.local out of the image; what the job needs is passed
 # explicitly (APPTAINERENV_* for apptainer, SINGULARITYENV_* for older SingularityCE).
@@ -34,11 +34,11 @@ fi
 pass TMPDIR             "$TMPDIR"
 pass XDG_CACHE_HOME     "$CACHE"
 pass CUPY_CACHE_DIR     "$CACHE/cupy"
-pass PYDVC_CACHE        "$CACHE/pydvc"
+pass ZVDVC_CACHE        "$CACHE/zvdvc"
 pass OMP_NUM_THREADS    "${NSLOTS:-1}"
 pass NUMBA_NUM_THREADS  "$(nproc)"
-pass PYDVC_MACHINE      "${PYDVC_MACHINE:-$(hostname -s)-h100}"
-[ -n "${PYDVC_BASELINE_DIR:-}" ] && pass PYDVC_BASELINE_DIR "$PYDVC_BASELINE_DIR"
+pass ZVDVC_MACHINE      "${ZVDVC_MACHINE:-$(hostname -s)-h100}"
+[ -n "${ZVDVC_BASELINE_DIR:-}" ] && pass ZVDVC_BASELINE_DIR "$ZVDVC_BASELINE_DIR"
 pass PATH               "/opt/venv/bin:/opt/nsight/bin:/usr/local/cuda/bin:/usr/local/bin:/usr/bin:/bin"
 pass PYTHONNOUSERSITE   "1"
 pass PYTHONUNBUFFERED   "1"
@@ -56,14 +56,14 @@ for d in "${bind_dirs[@]}"; do
     real="$(readlink -f "$d")"
     [ "$real" = "$d" ] || { bind="$bind,$real"; echo "binding $d -> $real"; }
 done
-# Optional: a pyDVC checkout used instead of the copy baked into the image (code edits without a rebuild).
-if [ -n "${PYDVC_DEV_SRC:-}" ]; then
-    PYDVC_DEV_SRC="$(cd "$PYDVC_DEV_SRC" && pwd -P)"
-    [ -d "$PYDVC_DEV_SRC/src/pydvc" ] || { echo "FATAL: PYDVC_DEV_SRC=$PYDVC_DEV_SRC has no src/pydvc" >&2; exit 1; }
-    bind="$bind,$PYDVC_DEV_SRC:/opt/pydvc-dev:ro"
-    pass PYTHONPATH "/opt/pydvc-dev/src"
-    pass PYDVC_SRC  "/opt/pydvc-dev"
-    echo "using pyDVC source from $PYDVC_DEV_SRC"
+# Optional: a zvDVC checkout used instead of the copy baked into the image (code edits without a rebuild).
+if [ -n "${ZVDVC_DEV_SRC:-}" ]; then
+    ZVDVC_DEV_SRC="$(cd "$ZVDVC_DEV_SRC" && pwd -P)"
+    [ -d "$ZVDVC_DEV_SRC/src/zvdvc" ] || { echo "FATAL: ZVDVC_DEV_SRC=$ZVDVC_DEV_SRC has no src/zvdvc" >&2; exit 1; }
+    bind="$bind,$ZVDVC_DEV_SRC:/opt/zvdvc-dev:ro"
+    pass PYTHONPATH "/opt/zvdvc-dev/src"
+    pass ZVDVC_SRC  "/opt/zvdvc-dev"
+    echo "using zvDVC source from $ZVDVC_DEV_SRC"
 fi
 
 box() { "$RUNTIME" exec --nv --cleanenv --bind "$bind" "$SIF" "$@"; }
@@ -73,11 +73,11 @@ box() { "$RUNTIME" exec --nv --cleanenv --bind "$bind" "$SIF" "$@"; }
 box python - <<'PY'
 import sys
 import cupy as cp
-import pydvc
+import zvdvc
 n = cp.cuda.runtime.getDeviceCount()
 if n == 0:
     sys.exit("FATAL: cupy sees no GPU inside the container (is --nv working?)")
-print(f"pydvc from {pydvc.__file__}; cupy {cp.__version__}; {n} GPU(s): "
+print(f"zvdvc from {zvdvc.__file__}; cupy {cp.__version__}; {n} GPU(s): "
       f"{cp.cuda.runtime.getDeviceProperties(0)['name'].decode()}; driver {cp.cuda.runtime.driverGetVersion()}")
 for i in range(n):
     try:

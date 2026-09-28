@@ -1,9 +1,9 @@
 import numpy as np
 import pytest
 
-from pydvc.geometry.box import Box
-from pydvc.io.volume import ZarrVolume
-from pydvc.synth.phantoms import DisplacementField, default_field, load_field, make_case, speckle, speckle_field, warp_volume
+from zvdvc.geometry.box import Box
+from zvdvc.io.volume import ZarrVolume
+from zvdvc.synth.phantoms import DisplacementField, default_field, load_field, make_case, speckle, speckle_field, warp_volume
 
 KINDS = ["rigid", "affine", "sinusoid", "inclusion"]
 rng = np.random.default_rng(4)
@@ -27,7 +27,7 @@ def test_inverse_map(kind):
 
 
 def test_rigid_field_is_a_rotation_about_the_centre():
-    from pydvc.geometry.warp import rotation_matrix
+    from zvdvc.geometry.warp import rotation_matrix
 
     angles = (0.02, -0.01, 0.015)
     field = DisplacementField("rigid", {"translation": (1.0, 2.0, 3.0), "rotation": angles, "centre": (10.0, 20.0, 30.0)})
@@ -60,7 +60,7 @@ def test_integer_translation_is_an_exact_shift():
 
 
 def test_make_case_writes_a_consistent_case(tmp_path):
-    from pydvc.config import RunConfig
+    from zvdvc.config import RunConfig
 
     field = DisplacementField("affine", {"translation": (0.5, -0.25, 1.0), "strain": (0.004, 0.0, -0.002, 0.001, 0.0, 0.0)})
     config = make_case(tmp_path / "c", shape_zyx=(80, 72, 64), field=field, spacing=12, chunk=32, shard=64)

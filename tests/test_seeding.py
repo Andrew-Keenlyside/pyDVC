@@ -1,7 +1,7 @@
 import numpy as np
 
-from pydvc.solver import seeding
-from pydvc.status import PointStatus
+from zvdvc.solver import seeding
+from zvdvc.status import PointStatus
 
 GRID = np.stack(np.meshgrid(*[np.arange(6.0) * 10] * 3, indexing="ij"), axis=-1).reshape(-1, 3)
 

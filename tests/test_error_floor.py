@@ -2,9 +2,9 @@
 
 import numpy as np
 
-from pydvc.bench import error_floor as ef
-from pydvc.geometry.box import Box
-from pydvc.synth.phantoms import _to_dtype, speckle_field
+from zvdvc.bench import error_floor as ef
+from zvdvc.geometry.box import Box
+from zvdvc.synth.phantoms import _to_dtype, speckle_field
 
 
 def _image(shape=(64, 64, 64)):
@@ -41,9 +41,9 @@ def test_crop_is_chosen_inside_the_material():
 
 
 def test_seed_repeatability_reports_the_spread_between_sample_sets(tmp_path):
-    from pydvc.config import RunConfig, SearchSpec, SubvolumeSpec
-    from pydvc.pipeline.inmemory import load_points
-    from pydvc.synth.phantoms import default_field, make_case
+    from zvdvc.config import RunConfig, SearchSpec, SubvolumeSpec
+    from zvdvc.pipeline.inmemory import load_points
+    from zvdvc.synth.phantoms import default_field, make_case
 
     shape = (64, 64, 64)
     cfg = RunConfig.from_yaml(make_case(tmp_path / "c", shape_zyx=shape, field=default_field("affine", shape), spacing=12.0,

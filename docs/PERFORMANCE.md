@@ -9,20 +9,20 @@
 
 ## 1. Summary
 
-| Scenario | CCPi DVC as shipped | pyDVC (GPU) | Speed-up |
+| Scenario | CCPi DVC as shipped | zvDVC (GPU) | Speed-up |
 |---|---|---|---|
 | **A**: iDVC example / CCPi test case, 4 680 pts | 4–11 min, 1 workstation | 2–6 s, **1× H100**, bound by I/O | **~40–300×** |
 | **B**: 4096³ u16 pair, ~8.4 M pts | 36–117 h per process (and the cloud must be split into ~10³ runs) | 1–3 min, **8× H100**, bound by I/O | **~700–7 000×** vs 1 process;<br>~250–3 500× vs a CPU node running 4 processes |
 
 **Measured so far (CPU only, [case A twin](benchmarks/2026-09-25-M4-case-A-twin.md)).**
 On 4 vCPU, with the iDVC example's geometry, points and settings, CCPi as iDVC
-runs it takes 17.8 min. pyDVC's restructured CPU engine takes 29 s in parity
+runs it takes 17.8 min. zvDVC's restructured CPU engine takes 29 s in parity
 mode and 48 s through the CLI, **22–37× faster before any GPU**. That is
 factors 1–4 of §5 alone. The GPU rows above are still modelled.
 
 **Measured on a GPU ([real case A](benchmarks/2026-09-26-case-A-real.md), RTX A2000 12 GB, 32-core workstation).**
 On the real iDVC example (4 680 points), CCPi as iDVC runs it took 37 min
-(2 231 s); pyDVC took **1.6 s on the GPU (1 396×)** and 7.6 s on the 32-core
+(2 231 s); zvDVC took **1.6 s on the GPU (1 396×)** and 7.6 s on the 32-core
 CPU engine (293×). On a 285 480-point 3D grid the GPU solve takes 18.7 s
 against ~300 s on the CPU engine: about 16× from the GPU itself, on this small
 workstation card. See §4.4 for why the first GPU run was far slower than
@@ -114,13 +114,13 @@ At scenario B's scale, two further limits apply:
   Running about 4 processes per node on disjoint subsets gains perhaps 2–3×,
   if the file system keeps up with random 144-byte row reads.
 
-## 4. pyDVC on H100
+## 4. zvDVC on H100
 
 ### 4.1 I/O: amortised by bricks
 
 Each tile of edge `T` is read once per volume with a halo `h = S/2 + disp_max + 2`,
 so the read amplification is `α = ((T + 2h)/T)³` (table in
-[`pipeline/tiling.py`](../src/pydvc/pipeline/tiling.py)):
+[`pipeline/tiling.py`](../src/zvdvc/pipeline/tiling.py)):
 
 | | Bytes read | At 10–25 GB/s |
 |---|---|---|
@@ -130,7 +130,7 @@ so the read amplification is `α = ((T + 2h)/T)³` (table in
 
 No per-voxel preprocessing happens at all. Tricubic is evaluated as separable
 Catmull-Rom directly from the native-dtype brick
-([`kernels/interpolate.py`](../src/pydvc/kernels/interpolate.py) explains why
+([`kernels/interpolate.py`](../src/zvdvc/kernels/interpolate.py) explains why
 this matches CCPi's Lekien–Marsden interpolant).
 
 ### 4.2 Compute: batched Gauss–Newton with an analytic Jacobian

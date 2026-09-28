@@ -1,8 +1,8 @@
 import numpy as np
 import pytest
 
-from pydvc.io import ccpi
-from pydvc.status import PointStatus
+from zvdvc.io import ccpi
+from zvdvc.status import PointStatus
 
 
 def test_status_codes_match_ccpi():
@@ -40,14 +40,14 @@ def test_reads_legacy_disp_with_rotation_columns(tmp_path):
     assert back["w"][0] == pytest.approx(0.125)
 
 
-def test_pydvc_only_status_is_exported_as_not_searched(tmp_path):
+def test_zvdvc_only_status_is_exported_as_not_searched(tmp_path):
     path = tmp_path / "run.disp"
     ccpi.write_disp(path, [1, 2], np.zeros((2, 3)), [PointStatus.SINGULAR, PointStatus.THRESH_FAIL], [0.0, 0.0], np.zeros((2, 3)))
     assert ccpi.read_disp(path)["status"].tolist() == [-3, -3]
 
 
 def test_roi_round_trip(tmp_path):
-    from pydvc.io.pointcloud import read_roi
+    from zvdvc.io.pointcloud import read_roi
 
     xyz = np.array([[1.5, 2.25, 3.0], [100.125, 0.0, 7.75]])
     ccpi.write_roi(tmp_path / "p.roi", np.array([7, 9]), xyz)
@@ -57,7 +57,7 @@ def test_roi_round_trip(tmp_path):
 
 
 def test_read_roi_accepts_headers_commas_and_comments(tmp_path):
-    from pydvc.io.pointcloud import read_roi
+    from zvdvc.io.pointcloud import read_roi
 
     (tmp_path / "p.csv").write_text("n,x,y,z\n# comment\n1, 1.0, 2.0, 3.0\n\n2,4,5,6  # trailing\n")
     ids, xyz = read_roi(tmp_path / "p.csv")
@@ -65,7 +65,7 @@ def test_read_roi_accepts_headers_commas_and_comments(tmp_path):
 
 
 def test_dvc_input_matches_the_config(tmp_path):
-    from pydvc.config import RunConfig, SearchSpec, SubvolumeSpec, ThresholdSpec, VolumeSpec
+    from zvdvc.config import RunConfig, SearchSpec, SubvolumeSpec, ThresholdSpec, VolumeSpec
 
     np.save(tmp_path / "ref.npy", np.zeros((4, 5, 6), dtype=np.uint16))
     ccpi.write_roi(tmp_path / "p.roi", np.array([1]), np.array([[2.0, 2.0, 1.5]]))
@@ -97,7 +97,7 @@ def test_throughput_from_ccpi_stat(tmp_path):
 
 
 def test_stat_round_trip(tmp_path):
-    from pydvc.config import RunConfig, VolumeSpec
+    from zvdvc.config import RunConfig, VolumeSpec
 
     cfg = RunConfig(volumes=VolumeSpec(reference="a", deformed="b"), points="p", output="o")
     ccpi.write_stat(tmp_path / "run.stat", cfg, ccpi.RunSummary(n_points=100, seconds=4.0, counts={0: 98, -1: 2}))
@@ -105,7 +105,7 @@ def test_stat_round_trip(tmp_path):
 
 
 def test_run_config_from_ccpi_input(tmp_path):
-    from pydvc.config import RunConfig
+    from zvdvc.config import RunConfig
 
     (tmp_path / "dvc_in.txt").write_text(
         "reference_filename\tf0.raw\t### ref\ncorrelate_filename\tf1.raw\t###\npoint_cloud_filename\tgrid.roi\t###\n"
@@ -130,7 +130,7 @@ def test_run_config_from_ccpi_input(tmp_path):
     ccpi.write_roi(tmp_path / "grid.roi", np.array([1]), np.array([[5.0, 6.0, 7.0]]))
     import dataclasses
 
-    from pydvc.config import VolumeSpec
+    from zvdvc.config import VolumeSpec
 
     c2 = dataclasses.replace(cfg, volumes=VolumeSpec(reference=str(tmp_path / "v.npy"), deformed=str(tmp_path / "v.npy")))
     ccpi.write_dvc_input(c2, tmp_path / "again.txt", roi_path=tmp_path / "grid.roi", output_base=tmp_path / "o")
@@ -140,7 +140,7 @@ def test_run_config_from_ccpi_input(tmp_path):
 
 def test_missing_required_key_is_reported(tmp_path):
     (tmp_path / "dvc_in.txt").write_text("reference_filename\ta.raw\t###\n")
-    from pydvc.config import RunConfig
+    from zvdvc.config import RunConfig
 
     with pytest.raises(ValueError, match="missing required keys"):
         RunConfig.from_ccpi(tmp_path / "dvc_in.txt")

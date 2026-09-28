@@ -5,8 +5,8 @@ import json
 import numpy as np
 import pytest
 
-from pydvc.bench import timeline
-from pydvc.profiling import EventLog, GpuTelemetry
+from zvdvc.bench import timeline
+from zvdvc.profiling import EventLog, GpuTelemetry
 
 
 def _worker(path, device, solves, start=0.0, end=10.0):
@@ -51,9 +51,9 @@ def test_a_pipeline_run_writes_events_the_timeline_can_read(tmp_path):
     pytest.importorskip("numba")
     import dataclasses
 
-    from pydvc.config import ClusterSpec, RunConfig, SearchSpec, SeedingSpec, SubvolumeSpec
-    from pydvc.pipeline import coordinator
-    from pydvc.synth.phantoms import default_field, make_case
+    from zvdvc.config import ClusterSpec, RunConfig, SearchSpec, SeedingSpec, SubvolumeSpec
+    from zvdvc.pipeline import coordinator
+    from zvdvc.synth.phantoms import default_field, make_case
 
     shape = (64, 64, 64)
     cfg = RunConfig.from_yaml(make_case(tmp_path / "c", shape_zyx=shape, field=default_field("affine", shape), spacing=8.0,

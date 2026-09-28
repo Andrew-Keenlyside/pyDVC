@@ -2,8 +2,8 @@
 
 import numpy as np
 
-from pydvc.geometry.box import Box
-from pydvc.io.volume import Brick
+from zvdvc.geometry.box import Box
+from zvdvc.io.volume import Brick
 
 
 def wave_field(shape_zyx, shift_xyz=(0.0, 0.0, 0.0), *, n_waves=40, seed=0):

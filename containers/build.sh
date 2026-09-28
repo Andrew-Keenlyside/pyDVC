@@ -1,8 +1,8 @@
 #!/bin/bash
-# Build pydvc.sif on a Linux machine with internet access, for copying to the cluster.
+# Build zvdvc.sif on a Linux machine with internet access, for copying to the cluster.
 #
-#   bash containers/build.sh                          # CUDA 12.4, ./pydvc.sif
-#   bash containers/build.sh --cuda 12.1 --out /data/images/pydvc.sif
+#   bash containers/build.sh                          # CUDA 12.4, ./zvdvc.sif
+#   bash containers/build.sh --cuda 12.1 --out /data/images/zvdvc.sif
 #
 # Picking --cuda: on a cluster GPU node (qrsh), run nvidia-smi and read the
 # "Driver Version" in its header. CUDA 12.x runs on any driver >= 525 (minor
@@ -22,7 +22,7 @@ usage() {
     cat <<'EOF'
 Options:
   --cuda VER    12.1, 12.4 (default), 12.6 or 12.8
-  --out PATH    where to write the image (default: ./pydvc.sif)
+  --out PATH    where to write the image (default: ./zvdvc.sif)
   --mode MODE   how to get root: auto (default), root, sudo or fakeroot
   --force       overwrite an existing image
   -h, --help    this text
@@ -32,7 +32,7 @@ say() { printf '\n==> %s\n' "$*"; }
 die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 
 CUDA=12.4
-OUT=pydvc.sif
+OUT=zvdvc.sif
 MODE=auto
 FORCE=0
 CUPY=14.2.0
@@ -61,9 +61,9 @@ RUNTIME=$(command -v apptainer || command -v singularity || true)
 [ -n "$RUNTIME" ] || die "no apptainer or singularity on PATH (https://apptainer.org/docs/admin/main/installation.html)"
 echo "runtime  $("$RUNTIME" --version)"
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-DEF="$REPO/containers/pydvc.def"
-for f in "$DEF" "$REPO/pyproject.toml" "$REPO/src/pydvc/__init__.py" "$REPO/scripts/get_ccpi_dvc.sh"; do
-    [ -e "$f" ] || die "missing $f; run this from a full pyDVC checkout"
+DEF="$REPO/containers/zvdvc.def"
+for f in "$DEF" "$REPO/pyproject.toml" "$REPO/src/zvdvc/__init__.py" "$REPO/scripts/get_ccpi_dvc.sh"; do
+    [ -e "$f" ] || die "missing $f; run this from a full zvDVC checkout"
 done
 case "$REPO" in *[[:space:]]*) die "the checkout path has a space in it ($REPO); move it" ;; esac
 COMMIT=$(git -C "$REPO" rev-parse --short HEAD 2>/dev/null || echo unknown)
@@ -104,7 +104,7 @@ esac
 echo "mode     $MODE"
 
 say "writing the definition"
-FILLED="$BUILD_TMP/pydvc.$$.def"
+FILLED="$BUILD_TMP/zvdvc.$$.def"
 trap 'rm -f "$FILLED"' EXIT
 sed -e "s|@BASE_IMAGE@|$BASE|g" -e "s|@CUDA@|$CUDA|g" -e "s|@REPO@|$REPO|g" \
     -e "s|@COMMIT@|$COMMIT|g" -e "s|@CUPY@|$CUPY|g" "$DEF" > "$FILLED"
@@ -116,11 +116,11 @@ FORCE_FLAG=()
 "${BUILD[@]}" "${FORCE_FLAG[@]}" "$OUT" "$FILLED"
 
 say "checking the image"
-"$RUNTIME" exec "$OUT" python -c "import pydvc, cupy, numba; print('pydvc ok; cupy', cupy.__version__)"
+"$RUNTIME" exec "$OUT" python -c "import zvdvc, cupy, numba; print('zvdvc ok; cupy', cupy.__version__)"
 "$RUNTIME" exec "$OUT" sh -c 'command -v nsys >/dev/null && echo "nsys ok" || echo "nsys missing (profiling runs will be skipped)"'
 if command -v nvidia-smi >/dev/null 2>&1; then
-    "$RUNTIME" exec --nv "$OUT" pydvc check quick >/dev/null 2>&1 && echo "pydvc check quick: PASS" \
-        || echo "pydvc check quick failed here; run it by hand: $RUNTIME exec --nv $OUT pydvc check gpu"
+    "$RUNTIME" exec --nv "$OUT" zvdvc check quick >/dev/null 2>&1 && echo "zvdvc check quick: PASS" \
+        || echo "zvdvc check quick failed here; run it by hand: $RUNTIME exec --nv $OUT zvdvc check gpu"
 fi
 ls -lh "$OUT"
 cat <<EOF

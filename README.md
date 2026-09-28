@@ -1,28 +1,35 @@
 <p align="center">
-  <img src="docs/assets/pydvc-logo.png" alt="pyDVC — GPU-based Digital Volume Correlation in python" width="420">
+  <img src="docs/assets/zvdvc-logo.png" alt="zvDVC: GPU-based Digital Volume Correlation backed by Zarr Vectors" width="520">
 </p>
 
-# pyDVC
+# zvDVC
 
-**GPU-based Digital Volume Correlation (DVC) for very large tomography datasets.**
+**GPU-based Digital Volume Correlation (DVC), backed by Zarr Vectors.**
 
-pyDVC is a feasibility project. It asks whether the local, subvolume-based DVC
-method behind [iDVC](https://github.com/TomographicImaging/iDVC) can be rebuilt
-as a batched GPU pipeline that runs on multi-GPU nodes (target: 8× H100),
-reading images from sharded OME-Zarr and storing search points and results in
-the [zarr-vectors](https://github.com/AllenInstitute/zarr-vectors-py/tree/gpu-backend)
-format through its GPU backend.
+zvDVC rebuilds the local, subvolume-based DVC method behind
+[iDVC](https://github.com/TomographicImaging/iDVC) as a batched GPU pipeline
+for multi-GPU nodes (target: 8× H100). It is also a use case for
+[Zarr Vectors](https://github.com/AllenInstitute/zarr-vectors-py/tree/gpu-backend).
+Search points and results live in zarr-vectors stores, and their spatial chunk
+grid is zvDVC's unit of work. The aim is to show what zarr-vectors' GPU
+backend, including reads over GPUDirect Storage (GDS), gains a real HPC
+workload. Images are read from sharded OME-Zarr.
+
+zvDVC was previously called pyDVC.
 
 > [!NOTE]
 > **Status: M0–M4 software done and measured on one GPU.** On the real iDVC
-> example (4 680 points), pyDVC takes 1.6 s on an RTX A2000 where CCPi, as
+> example (4 680 points), zvDVC takes 1.6 s on an RTX A2000 where CCPi, as
 > iDVC runs it, takes 37 min; interior points agree with CCPi in status on
 > 100 % of points with no systematic displacement difference
 > ([report](docs/benchmarks/2026-09-26-case-A-real.md)). Random and
 > systematic errors on real data are measured in the
 > [error-floor study](docs/benchmarks/2026-09-26-error-floor-case-A.md).
-> Multi-GPU (M4 on 8 × H100) is implemented but not yet measured. Local
-> checks: `pydvc check {quick,gpu,full}` ([TESTING.md](docs/TESTING.md)); cluster runs and the
+> Multi-GPU (M4 on 8 × H100) is implemented but not yet measured.
+> **GPUDirect Storage is not wired in or measured yet.** Every number so far
+> uses host decode plus one pinned host-to-device copy; see
+> [Zarr Vectors and GPUDirect Storage](#zarr-vectors-and-gpudirect-storage). Local
+> checks: `zvdvc check {quick,gpu,full}` ([TESTING.md](docs/TESTING.md)); cluster runs and the
 > scaling campaign: [CLUSTER.md](docs/CLUSTER.md).
 
 ---
@@ -42,7 +49,7 @@ established, but its structure limits it to modest point clouds:
 | Neighbour search is an O(N²) sort across the whole cloud. | Clouds of millions of points are impractical in a single run. |
 | Inputs are flat raw/npy files and outputs are `.disp`/`.stat` text files. | Hard to use with 100 GB+ volumes, object stores or cluster file systems. |
 
-pyDVC keeps the method (subvolume templates, 3/6/12-DOF shape functions,
+zvDVC keeps the method (subvolume templates, 3/6/12-DOF shape functions,
 SAD/SSD/ZSSD/NSSD/ZNSSD objectives, trilinear/tricubic interpolation, the same
 status codes and output fields). It changes how the work is organised.
 
@@ -77,7 +84,7 @@ status codes and output fields). It changes how the work is organised.
   normal-equation accumulation in one pass, and the small `ndof × ndof`
   systems are solved in batch.
 * **Seeding without serial order.** CCPi's neighbour-average seeding is
-  inherently sequential. pyDVC offers:
+  inherently sequential. zvDVC offers:
   * `wavefront`: CCPi-parity mode. Points are bucketed into distance shells
     from the start point, and each shell is batched and seeded from earlier
     shells.
@@ -89,9 +96,42 @@ status codes and output fields). It changes how the work is organised.
 
 More detail: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
+## Zarr Vectors and GPUDirect Storage
+
+zarr-vectors does four jobs in zvDVC
+([ARCHITECTURE.md §5](docs/ARCHITECTURE.md#5-data-formats)):
+
+* its chunk grid is the work partition;
+* `read_cells` gives each tile its points in one pooled read;
+* its three-phase write pattern lets workers write results without locks;
+* the results can be viewed in Neuroglancer and exported to iDVC.
+
+Its GPU backend can read cells straight into device memory with kvikio. With
+GDS configured (`ZARR_VECTORS_GPU_IO=kvikio`, `KVIKIO_COMPAT_MODE=OFF`, local
+NVMe), the bytes go from disk to GPU without passing through host memory.
+Without GDS, the same reads go through a pinned host buffer.
+
+| Data | Store | Read path today | GDS path |
+|---|---|---|---|
+| Search points, per tile | zarr-vectors | `read_cells(device="cpu")` | `read_cells(device="cuda")` over kvikio |
+| Results, whole cloud (repair, strain, export) | zarr-vectors | host reads, `read_neighbourhood(halo=1)` | the same calls with `device="cuda"` |
+| Image bricks (tile + halo) | OME-Zarr | host decode → pinned buffer → one copy to the device | kvikio / GDS, or zarr-python GPU buffers |
+
+Where the gain should show:
+
+* **Per tile, image bricks dominate.** A 1024³ u16 tile reads about 5 GB of
+  bricks but only a few MB of points. End-to-end DVC gains from GDS
+  therefore need the brick path as well as zarr-vectors.
+* **Whole-cloud passes are where zarr-vectors alone decides the time.**
+  Repair, strain and export read every result with its neighbours. Scenario B
+  (8.4 M points) is several hundred MB of results.
+
+The showcase benchmark (roadmap **M6**) measures both paths, host and GDS, on
+node-local NVMe on an 8× H100 node, per stage and end to end.
+
 ## Expected improvement (modelled, not measured)
 
-| Scenario | CCPi DVC as shipped | pyDVC | Modelled speed-up |
+| Scenario | CCPi DVC as shipped | zvDVC | Modelled speed-up |
 |---|---|---|---|
 | **A**: iDVC example (1520×1257×1260 u8, 4 680 pts, S=80 sphere, 8 000 samples, 6-DOF, tricubic, ZNSSD) | ~4–11 min on one workstation | ~2–6 s on **1** H100 (bound by I/O) | **~40–300×** end-to-end |
 | **B**: 4096³ u16 pair (275 GB), ~8.4 M pts, S=48 sphere, 4 096 samples, 6-DOF | ~1.5–5 days per process; the point cloud must be split into ~10³ runs | ~1–3 min on **8×H100** | **~700–7 000×** end-to-end |
@@ -112,7 +152,7 @@ in [docs/PERFORMANCE.md](docs/PERFORMANCE.md).
 ## Repository layout
 
 ```
-pyDVC/
+zvDVC/
 ├── README.md
 ├── pyproject.toml
 ├── configs/                      example run configurations (YAML)
@@ -124,13 +164,13 @@ pyDVC/
 │   ├── MVP_PLAN.md               milestones M0–M5, acceptance criteria, risks
 │   └── PERFORMANCE.md            cost model and speed-up estimate
 ├── scripts/slurm/
-│   ├── pydvc_8xh100.sbatch       plan → seed → run → finalize on a GPU node
+│   ├── zvdvc_8xh100.sbatch       plan → seed → run → finalize on a GPU node
 │   ├── case_L.sbatch             synthesise case L, then Q2 / Q3 / end to end
-│   └── storage_baseline.sh       fio + pyDVC read-path bandwidth
-├── src/pydvc/
+│   └── storage_baseline.sh       fio + zvDVC read-path bandwidth
+├── src/zvdvc/
 │   ├── config.py                 RunConfig (YAML / CCPi dvc_in import)
 │   ├── status.py                 PointStatus (CCPi-compatible codes)
-│   ├── cli.py                    `pydvc synth|convert|plan|seed|run|repair|finalize|compare|ccpi`
+│   ├── cli.py                    `zvdvc synth|convert|plan|seed|run|repair|finalize|compare|ccpi`
 │   ├── io/
 │   │   ├── volume.py             VolumeSource: OME-Zarr / raw / npy bricks → device
 │   │   ├── pointcloud.py         .roi/.txt import, zarr-vectors point-cloud store, tile reads
@@ -173,50 +213,50 @@ The CLI surface is fixed now so the milestones build toward it. Working today
 default: `fused` with a GPU, else `cpu` with numba):
 
 ```bash
-pydvc synth --shape 256 256 256 --field affine --spacing 16 --out data/synth256   # case S
-pydvc plan     data/synth256/config.yaml        # points store, tiles, bricks, memory check, results store
-pydvc seed     data/synth256/config.yaml        # wavefront / coarse / rigid
-pydvc run      data/synth256/config.yaml        # tile loop; skips tiles already written (resume)
-pydvc finalize data/synth256/config.yaml --disp
-pydvc compare  data/synth256/results.zarrvectors data/synth256/truth.npz
-pydvc solve    data/synth256/config.yaml        # whole-volume in-memory solve (reference / parity)
-python -m pydvc.bench.ccpi_baseline data/synth256/config.yaml --workdir runs/ccpi_S
-python -m pydvc.bench.throughput --backend fused cpu --samples 2000 --dof 6 12
+zvdvc synth --shape 256 256 256 --field affine --spacing 16 --out data/synth256   # case S
+zvdvc plan     data/synth256/config.yaml        # points store, tiles, bricks, memory check, results store
+zvdvc seed     data/synth256/config.yaml        # wavefront / coarse / rigid
+zvdvc run      data/synth256/config.yaml        # tile loop; skips tiles already written (resume)
+zvdvc finalize data/synth256/config.yaml --disp
+zvdvc compare  data/synth256/results.zarrvectors data/synth256/truth.npz
+zvdvc solve    data/synth256/config.yaml        # whole-volume in-memory solve (reference / parity)
+python -m zvdvc.bench.ccpi_baseline data/synth256/config.yaml --workdir runs/ccpi_S
+python -m zvdvc.bench.throughput --backend fused cpu --samples 2000 --dof 6 12
 
-# the iDVC example dataset (Zenodo 7363345): CCPi as iDVC runs it vs pyDVC, speed and agreement
-python -m pydvc.bench.case_a fetch --data data/magma
-python -m pydvc.bench.case_a run --data data/magma --out runs/case_A --ccpi-exe /path/to/ccpi-dvc-22.0.0/bin/dvc
+# the iDVC example dataset (Zenodo 7363345): CCPi as iDVC runs it vs zvDVC, speed and agreement
+python -m zvdvc.bench.case_a fetch --data data/magma
+python -m zvdvc.bench.case_a run --data data/magma --out runs/case_A --ccpi-exe /path/to/ccpi-dvc-22.0.0/bin/dvc
 
 # one 8x H100 node: case L, storage baseline, Q2/Q3, end to end
-sbatch scripts/slurm/case_L.sbatch 2048 /scratch/pydvc/caseL2048
+sbatch scripts/slurm/case_L.sbatch 2048 /scratch/zvdvc/caseL2048
 ```
 
 Repair, the CCPi drop-in and tested multi-node runs arrive with M5:
 
 ```bash
 # 1. make a synthetic case with a known displacement field
-pydvc synth --shape 256 256 256 --field affine --out data/synth256
+zvdvc synth --shape 256 256 256 --field affine --out data/synth256
 
 # 2. convert CCPi/iDVC inputs (raw, mhd, npy, tiff) to sharded OME-Zarr once
-pydvc convert dataset_0.npy data/ref.ome.zarr --chunk 128 --shard 1024
+zvdvc convert dataset_0.npy data/ref.ome.zarr --chunk 128 --shard 1024
 
 # 3. run on one node with all GPUs
-pydvc plan    configs/large_8xh100.yaml     # tiles, bricks, memory check, result store allocation
-pydvc seed    configs/large_8xh100.yaml     # coarse pass → seed field
-pydvc run     configs/large_8xh100.yaml     # one process per GPU, dynamic tile queue
-pydvc repair  configs/large_8xh100.yaml     # re-seed and re-solve failed points
-pydvc finalize configs/large_8xh100.yaml    # presence, metadata, .disp/.stat export
+zvdvc plan    configs/large_8xh100.yaml     # tiles, bricks, memory check, result store allocation
+zvdvc seed    configs/large_8xh100.yaml     # coarse pass → seed field
+zvdvc run     configs/large_8xh100.yaml     # one process per GPU, dynamic tile queue
+zvdvc repair  configs/large_8xh100.yaml     # re-seed and re-solve failed points
+zvdvc finalize configs/large_8xh100.yaml    # presence, metadata, .disp/.stat export
 
 # or submit the whole chain
-sbatch scripts/slurm/pydvc_8xh100.sbatch configs/large_8xh100.yaml
+sbatch scripts/slurm/zvdvc_8xh100.sbatch configs/large_8xh100.yaml
 
 # 4. drop-in replacement for the CCPi `dvc` executable (reads dvc_in, writes .disp/.stat)
-pydvc ccpi dvc_config.txt
+zvdvc ccpi dvc_config.txt
 ```
 
 ```python
-from pydvc import RunConfig
-from pydvc.pipeline import coordinator
+from zvdvc import RunConfig
+from zvdvc.pipeline import coordinator
 
 cfg = RunConfig.from_yaml("configs/synthetic_small.yaml")
 coordinator.prepare(cfg)
@@ -232,15 +272,19 @@ installation, the local self-test, the first GPU run, the iDVC example dataset
 and the cluster runs. In short:
 
 ```bash
-micromamba create -f envs/pydvc-cpu.yml && micromamba activate pydvc   # or envs/pydvc-gpu.yml (CUDA 12)
-pip install -e ".[test,cpu-fast]"     # pyDVC + zarr + zarr-vectors (pinned gpu-backend commit) + numba
-pytest -q && pydvc selftest           # ~5 min; PASS/FAIL per backend
+micromamba create -f envs/zvdvc-cpu.yml && micromamba activate zvdvc   # or envs/zvdvc-gpu.yml (CUDA 12)
+pip install -e ".[test,cpu-fast]"     # zvDVC + zarr + zarr-vectors (pinned gpu-backend commit) + numba
+pytest -q && zvdvc selftest           # ~5 min; PASS/FAIL per backend
 eval "$(scripts/get_ccpi_dvc.sh)"     # optional: CCPi dvc 22.0.0 for the baselines
 ```
 
 zarr-vectors is pinned to a commit on its `gpu-backend` branch, since that
 branch is under active development. Optional extras: `[gpu]` (cupy, GPU
 codecs), `[gpu-io]` (kvikio / GPUDirect Storage), `[mpi]`, `[tiff]`.
+
+Coming from pyDVC: the package is now `zvdvc`, the commands are `zvdvc` and
+`zvdvc-dvc`, and environment variables are `ZVDVC_*` (for example
+`ZVDVC_CCPI_DVC`). Results stores written by pyDVC still open.
 
 ## Data conventions
 
@@ -266,14 +310,15 @@ codecs), `[gpu-io]` (kvikio / GPUDirect Storage), `[mpi]`, `[tiff]`.
 | **M3** | OME-Zarr bricks, zarr-vectors stores, tiling, single-GPU end-to-end |
 | **M4** | 8-GPU launcher, dynamic tile queue, resume, finalize: **the MVP** |
 | M5 | IC-GN, coarse/FFT seeding, repair, strain, iDVC drop-in, multi-node |
+| M6 | GPUDirect Storage: zarr-vectors device reads for points and results, kvikio brick reads, host vs GDS benchmark |
 
 Details, acceptance criteria and risks: [docs/MVP_PLAN.md](docs/MVP_PLAN.md).
 
 ## Acknowledgements and citation
 
-pyDVC reimplements the method of the CCPi DVC code by Prof. Brian K. Bay and
+zvDVC reimplements the method of the CCPi DVC code by Prof. Brian K. Bay and
 collaborators (UKRI-STFC, Oregon State University), which iDVC drives. If you
-use pyDVC, please cite:
+use zvDVC, please cite:
 
 1. B. K. Bay, T. S. Smith, D. P. Fyhrie, M. Saad, "Digital volume correlation:
    Three-dimensional strain mapping using x-ray tomography", *Experimental
@@ -288,7 +333,7 @@ doi:10.5281/zenodo.7363345.
 
 ## License
 
-pyDVC is licensed under the **GNU General Public License v3.0 or later**
+zvDVC is licensed under the **GNU General Public License v3.0 or later**
 (`GPL-3.0-or-later`); see [LICENSE](LICENSE).
 
 The CCPi DVC engine is GPL-3.0, so its source may be consulted and adapted

@@ -19,7 +19,7 @@
   "software": {
    "python": "3.11.16",
    "packages": {
-    "pydvc": "0.0.1.dev0",
+    "zvdvc": "0.0.1.dev0",
     "numpy": "2.4.6",
     "scipy": "1.17.1",
     "zarr": "3.1.6",

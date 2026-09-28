@@ -7,7 +7,7 @@ measured answers:
 
 | # | Question | Pass criterion |
 |---|---|---|
-| Q1 | **Accuracy.** Does batched GPU correlation match ground truth, and match CCPi? | Synthetic: displacement RMSE ≤ 0.02 voxel noise-free and ≤ 0.05 with 2 % noise, ≥ 99 % GOOD. Case A vs CCPi `.disp`: median \|Δu\| ≤ 0.05 voxel, 95th percentile ≤ 0.2, status agreement ≥ 98 %. **Revised 2026-09-27** (the median test cannot be met even by pyDVC against itself, because the two codes sample each subvolume at different random points): on interior points, every per-axis mean difference ≤ 0.01 voxel, and the spread of the difference ≤ 1.25 × pyDVC's own seed-to-seed spread; the original figures are still reported. Case A: original fails on the median by 0.0012; revised passes (mean ≤ 0.003, spread ratio 0.98–1.03). |
+| Q1 | **Accuracy.** Does batched GPU correlation match ground truth, and match CCPi? | Synthetic: displacement RMSE ≤ 0.02 voxel noise-free and ≤ 0.05 with 2 % noise, ≥ 99 % GOOD. Case A vs CCPi `.disp`: median \|Δu\| ≤ 0.05 voxel, 95th percentile ≤ 0.2, status agreement ≥ 98 %. **Revised 2026-09-27** (the median test cannot be met even by zvDVC against itself, because the two codes sample each subvolume at different random points): on interior points, every per-axis mean difference ≤ 0.01 voxel, and the spread of the difference ≤ 1.25 × zvDVC's own seed-to-seed spread; the original figures are still reported. Case A: original fails on the median by 0.0012; revised passes (mean ≤ 0.003, spread ratio 0.98–1.03). |
 | Q2 | **Kernel throughput.** Is the fused step as fast as modelled? | On H100 with scenario-B settings: **≥ 100 k pt/s per GPU** (model: 150–500 k), or ≥ 10 % of FP32 peak achieved. |
 | Q3 | **Scaling.** Do 8 GPUs deliver? | 1→8 GPU efficiency ≥ 85 % on a compute-bound configuration; an I/O-bound configuration sustains ≥ 70 % of the node's measured storage bandwidth. |
 | Q4 | **Data path.** Do OME-Zarr bricks and zarr-vectors stores keep up at 10⁷ points? | Compute stream waits on I/O ≤ 20 % of the time; allocate + parallel write + finalize of a 10⁷-point results store takes ≤ 5 % of run time; the store passes zarr-vectors validation. |
@@ -33,7 +33,7 @@ pressure, I/O path) or fundamental.
 
 **After the MVP (M5)**
 
-IC-GN, FFT seeding, the repair pass, strain, the `pydvc ccpi` drop-in for
+IC-GN, FFT seeding, the repair pass, strain, the `zvdvc ccpi` drop-in for
 iDVC, multi-node runs, GPU kNN, the time-series mode, subvolume
 thresholding and Neuroglancer pyramids.
 
@@ -47,7 +47,7 @@ thresholding and Neuroglancer pyramids.
 | **L** | synthetic 2048³ and 4096³ u16, `inclusion` field | 2.1 M / ~8.4 M (masked) | scenario B ([configs/large_8xh100.yaml](../configs/large_8xh100.yaml)) | 8×H100 scaling and end-to-end time |
 
 Ground truth for S, M and L comes from
-[`synth/phantoms.py`](../src/pydvc/synth/phantoms.py). Case A's truth is
+[`synth/phantoms.py`](../src/zvdvc/synth/phantoms.py). Case A's truth is
 CCPi's own result, so its comparison is *agreement*, not accuracy.
 
 ## 4. Milestones
@@ -59,7 +59,7 @@ about 8–11 weeks.**
 
 | Task | Files |
 |---|---|
-| Speckle phantoms and analytic fields (rigid, affine, sinusoid, inclusion), chunked straight to OME-Zarr | `synth/phantoms.py`, `pydvc synth` |
+| Speckle phantoms and analytic fields (rigid, affine, sinusoid, inclusion), chunked straight to OME-Zarr | `synth/phantoms.py`, `zvdvc synth` |
 | CCPi input writer, `.roi` writer, `.disp`/`.stat` readers | `io/ccpi.py` |
 | Run CCPi `dvc` (conda `ccpi-dvc`) on S and A: OMP thread sweep, P concurrent processes | `bench/ccpi_baseline.py` |
 | Confirm the Zenodo pair reproduces CCPi's `completed_central_grid.disp` | `docs/benchmarks/` |
@@ -100,10 +100,10 @@ reference `.disp` check are still to run.
 
 **Status (2026-09-25): done except the case A checks.**
 All M1 files are implemented, plus an in-memory runner
-(`pipeline/inmemory.py`, `pydvc solve`) that drives the numpy path.
+(`pipeline/inmemory.py`, `zvdvc solve`) that drives the numpy path.
 Catmull-Rom matches Lekien–Marsden to 1.1e-12. The warp Jacobian matches
 finite differences. On S, Q1 synthetic passes: RMSE 0.0011 noise-free and 0.0103
-with 2 % noise, 100 % GOOD. pyDVC agrees with CCPi on S (median |Δu| 0.0016,
+with 2 % noise, 100 % GOOD. zvDVC agrees with CCPi on S (median |Δu| 0.0016,
 100 % status agreement). The CCPi-agreement check and the "A in minutes" check
 on case A wait for the data. M1 was written
 clean-room from the published method and black-box runs of `dvc`, without
@@ -154,7 +154,7 @@ no GPU, so the kernels were built and checked without one:
 | Task | Files |
 |---|---|
 | `Box`, halo, OME-Zarr brick reads to device (host-decode path first, then GPU buffers or kvikio) | `geometry/box.py`, `io/volume.py` |
-| `convert_to_ome_zarr` | `io/volume.py`, `pydvc convert` |
+| `convert_to_ome_zarr` | `io/volume.py`, `zvdvc convert` |
 | zarr-vectors point-cloud store: write (three-phase), `read_tile` via `read_cells(device="cuda")` | `io/pointcloud.py` |
 | Results store: allocate, `write_tile`, finalize | `io/results.py` |
 | Tile planning, brick boxes, memory check, `plan.json` | `pipeline/tiling.py` |
@@ -169,7 +169,7 @@ no GPU, so the kernels were built and checked without one:
 * The results store passes zarr-vectors validation and reads back through `zv.open(...).select(bbox=...)`.
 
 **Status (2026-09-25): implemented and measured on CPU; GPU measurements outstanding.**
-Stores follow zarr-vectors' three-phase pattern, with pyDVC assigning bins.
+Stores follow zarr-vectors' three-phase pattern, with zvDVC assigning bins.
 The pipeline covers OME-Zarr bricks (host decode, pinned staging to the
 device), `convert_to_ome_zarr`, tiling and `plan.json`, the TileWorker (a
 prefetch thread and a writer thread), and the coordinator: prepare / seed
@@ -211,30 +211,30 @@ GPU run.
 * **Done.**
   * `pipeline/launch.py`: node and rank discovery from SLURM, torchrun or
     Open MPI; one process per GPU (spawn) sharing a node-local queue of tile
-    ids; LPT shares per node. `pydvc run --devices` and `--cpu-workers`.
+    ids; LPT shares per node. `zvdvc run --devices` and `--cpu-workers`.
   * Resume, requeue, `failed_tiles.json` and `run_stats.json`. A cell counts
     as written only when every result array holds it.
   * `RunConfig.from_ccpi` reads CCPi `dvc_in` files.
   * Scripts: a fixed SLURM chain (it no longer calls the M5 `repair` stub),
-    `scripts/slurm/storage_baseline.sh` (fio plus pyDVC's own read path),
+    `scripts/slurm/storage_baseline.sh` (fio plus zvDVC's own read path),
     `scripts/slurm/case_L.sbatch` (generate, then Q2, Q3 and end to end), and
-    `python -m pydvc.bench.scaling` (1→N efficiency, read bandwidth).
+    `python -m zvdvc.bench.scaling` (1→N efficiency, read bandwidth).
 * **Kill criterion met (on CPU workers).** `kill -9` of one of two worker
   processes mid-run: the node's run finishes the other tiles, and the
   resubmitted job solves only the 4 missing tiles and writes a bit-identical
   store (`tests/test_launch.py`).
 * **Case A vs iDVC.** On a synthetic twin of case A (identical geometry,
   points and settings; the Zenodo data is unreachable from the development
-  environment), pyDVC's CPU engine on 4 cores takes 28.6 s (parity mode)
+  environment), zvDVC's CPU engine on 4 cores takes 28.6 s (parity mode)
   or 47.6 s (CLI end to end). CCPi as iDVC runs it takes 1 069 s on the same
   cores: **22–37× faster, before any GPU**. Displacements agree with CCPi 22.0.0
   to a median 0.010 voxel. Status agreement is 97.8 %: 104 edge points whose
-  subvolume leaves the image, which pyDVC flags and CCPi does not. The
-  real-data run is one command, `python -m pydvc.bench.case_a`.
+  subvolume leaves the image, which zvDVC flags and CCPi does not. The
+  real-data run is one command, `python -m zvdvc.bench.case_a`.
 * **Ready for your machines:** [TESTING.md](TESTING.md) covers the
-  environment files (`envs/`), `pydvc selftest` (PASS/FAIL per backend), the
+  environment files (`envs/`), `zvdvc selftest` (PASS/FAIL per backend), the
   first GPU run, case A against iDVC, and the cluster jobs. A fresh
-  environment built from `envs/pydvc-cpu.yml` passes the test suite and the
+  environment built from `envs/zvdvc-cpu.yml` passes the test suite and the
   self-test.
 * **Outstanding (needs the hardware):** Q2 and Q3 on case L, the 4096³
   end-to-end time, and the GPU numbers for case A. `sbatch
@@ -248,7 +248,7 @@ GPU run.
 ### M5: after the MVP (6–8 weeks, prioritised by what M4 shows)
 
 IC-GN · FFT-CC seeding · repair pass · strain · coarse pass on pyramid level
-1 · `pydvc ccpi` drop-in with iDVC progress lines · GPU kNN · multi-node
+1 · `zvdvc ccpi` drop-in with iDVC progress lines · GPU kNN · multi-node
 (static shares, then a shared queue) · time-series mode · subvolume
 thresholding · Neuroglancer pyramids.
 
@@ -274,7 +274,7 @@ rather than failures.
 
 | Risk | Likelihood | Impact | Mitigation |
 |---|---|---|---|
-| zarr-vectors gpu-backend API changes | high | medium | Pin the commit. Use only `api` and `building`. All access goes through `pydvc.io`. Report gaps upstream (bin assignment is internal). |
+| zarr-vectors gpu-backend API changes | high | medium | Pin the commit. Use only `api` and `building`. All access goes through `zvdvc.io`. Report gaps upstream (bin assignment is internal). |
 | Catmull-Rom ≠ CCPi tricubic | low | medium | Tested in M1; fallback is the 64-weight Lekien stencil (same traffic, ~1.5–2× flop). |
 | ~~The ZNSSD Jacobian approximation (fixed target stats per iteration) slows convergence~~ | resolved in M1 | — | The exact normalisation derivative is used (two extra sums per point); see ARCHITECTURE §7. |
 | 12-DOF register pressure (78 + 12 accumulators) | measured statically: 250 registers, 520 B stack, no spills (`ptxas`, sm_90) | medium | Nsight on the first GPU run; then warp-cooperative accumulation or splitting the sums across two passes. |
@@ -282,11 +282,11 @@ rather than failures.
 | GPU zstd decode of image chunks not available through zarr-python | medium | low | Host decode into pinned memory with threads; measure before optimising. |
 | Coarse seeds fail near discontinuities (cracks, slip bands) | medium | medium | Repair pass (M5); per-tile wavefront fallback; FFT seeding. |
 | float32 precision | low | medium | Relative coordinates, compensated sums, float64 reference tests. |
-| ~~Licensing (CCPi is GPL-3.0)~~ | resolved | — | pyDVC is GPL-3.0-or-later (2026-09-26), so CCPi source may be consulted. |
+| ~~Licensing (CCPi is GPL-3.0)~~ | resolved | — | zvDVC is GPL-3.0-or-later (2026-09-26), so CCPi source may be consulted. |
 
 ## 7. Decisions needed from the project owner
 
 1. ~~**Licence**~~: decided 2026-09-26, GPL-3.0-or-later (README).
 2. **Target cluster**: file system and per-node bandwidth, container runtime, CUDA version, and whether GPUDirect Storage is enabled. This sets the M4 I/O path.
 3. **Real datasets** beyond the iDVC example, to run after M4. Ideally one large time series.
-4. **iDVC integration**: whether the `pydvc ccpi` drop-in moves into the MVP. It adds about 1 week.
+4. **iDVC integration**: whether the `zvdvc ccpi` drop-in moves into the MVP. It adds about 1 week.

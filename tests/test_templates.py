@@ -1,8 +1,8 @@
 import numpy as np
 import pytest
 
-from pydvc.config import SubvolumeSpec
-from pydvc.geometry.templates import cube_side, make_template
+from zvdvc.config import SubvolumeSpec
+from zvdvc.geometry.templates import cube_side, make_template
 
 
 @pytest.mark.parametrize("n, k", [(1, 1), (8, 2), (27, 3), (28, 4), (64, 4), (8000, 20), (8001, 21)])
@@ -44,7 +44,7 @@ def _zyx_sorted(o):
 
 
 def test_sphere_offsets_are_in_zyx_order_and_the_same_samples(monkeypatch):
-    from pydvc.geometry import templates
+    from zvdvc.geometry import templates
 
     spec = SubvolumeSpec(geometry="sphere", size=30, n_samples=3000)
     sorted_t = templates.make_template(spec)
