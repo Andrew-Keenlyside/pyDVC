@@ -14,8 +14,8 @@ label so the two are never compared. The small synthetic volumes of
 :mod:`zvdvc.bench.throughput` fit in cache and overstate GPU speed.
 
 Every run checks each engine's sums against the float64 numpy engine on the
-first 64 points. ``rel_err`` is the largest |error| over all sums, each divided
-by that sum's largest |reference| value, floored at 1e-6 of the largest sum:
+first 64 points. ``rel_err`` is the largest ``|error|`` over all sums, each divided
+by that sum's largest ``|reference|`` value, floored at 1e-6 of the largest sum:
 some sums cancel to ~0 by construction (sum q under ZNSSD), and dividing by
 them would measure rounding noise, not error.
 

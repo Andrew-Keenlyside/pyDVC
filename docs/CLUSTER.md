@@ -41,7 +41,7 @@ instead of the image's copy.
 ```bash
 ssh pryor
 cd /home/akeenlys/storage_main/bridge_project_data
-git clone -b develop https://github.com/Andrew-Keenlyside/pyDVC.git zvdvc
+git clone -b develop https://github.com/Andrew-Keenlyside/zvDVC.git zvdvc
 mkdir -p logs containers
 ```
 

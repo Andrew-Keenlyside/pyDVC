@@ -19,6 +19,7 @@ Sources
        codec pipeline supports it;
     3. host decode into pinned memory, then one host-to-device copy per brick
        on the worker's prefetch stream.
+
     Implemented today: path 3. The brick is decoded on the host (zarr-python
     reads the shards' chunks concurrently) into a pinned buffer and copied up
     in one transfer on the caller's stream. Paths 1 and 2 are optimisations to

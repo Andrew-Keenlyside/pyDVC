@@ -18,3 +18,4 @@ runs/
 *.npy
 *.disp
 *.stat
+docs/_build/

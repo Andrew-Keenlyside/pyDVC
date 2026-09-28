@@ -21,7 +21,7 @@ and norm fixed within an iteration (common FA-GN/IC-GN practice) moves the
 fixed point for NSSD/ZNSSD by a term proportional to ``(1 - rho) * d|g~|/dp``,
 which is not zero under noise. The exact form costs only two more per-point
 sums, ``sum J`` and ``sum g J``, which the fused kernel accumulates in the
-same pass. With ``J`` the target Jacobian (B, M, ndof) and ``g^ = g~/|g~|``:
+same pass. With ``J`` the target Jacobian (B, M, ndof) and ``g^ = g~/|g~|``::
 
     zssd   H = J'J - M m m',                 b = J'r
     nssd   H = (J'J - a a') / |g|^2,         b = (J'r - a (g^.r)) / |g|

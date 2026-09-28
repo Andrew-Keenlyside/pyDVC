@@ -1,0 +1,17 @@
+# Documentation build dependencies
+# Install with: pip install -r docs/requirements-docs.txt
+# Build:        sphinx-build -b html docs docs/_build/html
+
+# Sphinx core
+sphinx>=7.2,<9
+
+# Theme
+furo>=2024.1.29
+
+# Markdown support
+myst-parser>=3.0
+
+# Extensions
+sphinx-copybutton>=0.5.2
+sphinx-argparse>=0.5          # CLI reference, rendered from zvdvc.cli.build_parser
+sphinx-autobuild>=2024.2.4   # live reload: sphinx-autobuild docs docs/_build/html

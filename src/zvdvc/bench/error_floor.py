@@ -91,7 +91,7 @@ def estimate_noise(vol: np.ndarray, n_slices: int = 16) -> float:
 
 
 def choose_crop(volume: Any, shape_zyx: tuple[int, int, int], size: int, stride: int = 8) -> tuple[int, int, int]:
-    """Origin (z, y, x) of the ``size``³ crop with the most foreground (Otsu threshold on a subsample)."""
+    """Origin (z, y, x) of the cubic crop of side ``size`` with the most foreground (Otsu threshold on a subsample)."""
     from scipy.ndimage import uniform_filter
 
     sub = np.asarray(volume[::stride, ::stride, ::stride], dtype=np.float64)
