@@ -3,9 +3,9 @@ requires = ["hatchling>=1.27"]   # PEP 639 license metadata
 build-backend = "hatchling.build"
 
 [project]
-name = "pydvc"
+name = "zvdvc"
 version = "0.0.1.dev0"
-description = "GPU-based Digital Volume Correlation for very large tomography datasets"
+description = "GPU-based Digital Volume Correlation for very large tomography datasets, backed by Zarr Vectors"
 readme = "README.md"
 # zarr v3 (required by zarr-vectors) needs Python >= 3.11.
 requires-python = ">=3.11"
@@ -41,14 +41,14 @@ tiff = ["tifffile>=2024.1"]
 test = ["pytest>=8"]
 
 [project.scripts]
-pydvc = "pydvc.cli:main"
-pydvc-dvc = "pydvc.ccpi_dropin:main"   # CCPi dvc drop-in, for iDVC (docs/IDVC.md)
+zvdvc = "zvdvc.cli:main"
+zvdvc-dvc = "zvdvc.ccpi_dropin:main"   # CCPi dvc drop-in, for iDVC (docs/IDVC.md)
 
 [tool.hatch.metadata]
 allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/pydvc"]
+packages = ["src/zvdvc"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

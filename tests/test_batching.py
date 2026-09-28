@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from pydvc.pipeline.batching import batch_size, iter_batches, morton_order
+from zvdvc.pipeline.batching import batch_size, iter_batches, morton_order
 
 
 def test_morton_order_visits_octants_in_turn():

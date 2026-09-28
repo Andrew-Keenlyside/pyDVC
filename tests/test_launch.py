@@ -11,11 +11,11 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from pydvc.config import ClusterSpec, RunConfig, SearchSpec, SeedingSpec, SubvolumeSpec
-from pydvc.io.results import ResultStore
-from pydvc.pipeline import coordinator
-from pydvc.pipeline.launch import NodeInfo, node_info, node_share
-from pydvc.synth.phantoms import default_field, make_case
+from zvdvc.config import ClusterSpec, RunConfig, SearchSpec, SeedingSpec, SubvolumeSpec
+from zvdvc.io.results import ResultStore
+from zvdvc.pipeline import coordinator
+from zvdvc.pipeline.launch import NodeInfo, node_info, node_share
+from zvdvc.synth.phantoms import default_field, make_case
 
 pytest.importorskip("numba")
 SHAPE = (80, 80, 80)
@@ -87,7 +87,7 @@ def test_killed_worker_then_resubmit_gives_the_same_store(case):
     crashed.to_yaml(cfg_file)
     job = subprocess.Popen(
         [sys.executable, "-c",
-         "from pydvc.config import RunConfig; from pydvc.pipeline import coordinator; "
+         "from zvdvc.config import RunConfig; from zvdvc.pipeline import coordinator; "
          f"coordinator.run(RunConfig.from_yaml({str(cfg_file)!r}), backend='cpu', cpu_workers=2)"],
     )
     pid_file = Path(crashed.workdir) / "workers" / "slot0.pid"

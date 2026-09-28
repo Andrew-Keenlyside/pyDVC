@@ -2,10 +2,10 @@
 
 Date: 2026-09-26. Same workstation and commit as
 [2026-09-26-case-A-real.md](2026-09-26-case-A-real.md): RTX A2000 12 GB,
-backend `fused`. Module: [`bench/error_floor.py`](../../src/pydvc/bench/error_floor.py).
+backend `fused`. Module: [`bench/error_floor.py`](../../src/zvdvc/bench/error_floor.py).
 
 **Summary.** At CCPi's case A settings (sphere 80, 8 000 samples, 6-DOF,
-ZNSSD, tricubic), a pyDVC displacement on this scan carries three errors:
+ZNSSD, tricubic), a zvDVC displacement on this scan carries three errors:
 
 | error | size (voxel, per axis) | depends on |
 |---|---|---|
@@ -50,7 +50,7 @@ from the choice of sample points.
 Reproduce:
 
 ```bash
-python -m pydvc.bench.error_floor --case-a runs/case_A_data --out runs/error_floor    # ~35 min on the A2000
+python -m zvdvc.bench.error_floor --case-a runs/case_A_data --out runs/error_floor    # ~35 min on the A2000
 ```
 
 ## 1. Interpolation bias
@@ -120,7 +120,7 @@ The central grid on the real volumes, three template seeds, fused backend:
 | seed 0 vs seed 1 | 0.0509 | 0.1505 | −0.0028, −0.0008, −0.0010 |
 | seed 0 vs seed 2 | 0.0516 | 0.1558 | −0.0022, +0.0019, +0.0064 |
 | seed 1 vs seed 2 | 0.0517 | 0.1533 | +0.0006, +0.0027, +0.0074 |
-| *pyDVC vs CCPi (for comparison)* | *0.0512* | *0.1517* | *−0.0027, −0.0017, −0.0005* |
+| *zvDVC vs CCPi (for comparison)* | *0.0512* | *0.1517* | *−0.0027, −0.0017, −0.0005* |
 
 Uncertainty of one estimate (per axis), against sample count:
 
@@ -136,10 +136,10 @@ differ by more than a shift. It is about 6× the noise-driven error of
 section 2 at the same settings, and it is invisible to shifted-copy tests,
 where every sample set sees the same texture in both images.
 
-It also **explains the disagreement with CCPi entirely**: pyDVC with a
+It also **explains the disagreement with CCPi entirely**: zvDVC with a
 different seed disagrees with itself exactly as much as it disagrees with CCPi
 (median 0.051, p95 0.15), and the mean differences are all ≤ 0.007 voxel. The
-case A comparison's median criterion (0.05) therefore cannot be met by pyDVC
+case A comparison's median criterion (0.05) therefore cannot be met by zvDVC
 against itself at 8 000 samples; the criterion should be revised (see below).
 
 ## 4. Reducing the bias
@@ -148,8 +148,8 @@ against itself at 8 000 samples; the criterion should be revised (see below).
 CCPi's Lekien–Marsden tricubic is fed central-difference derivatives
 (`Matrix_4d.h`: `(f₊₁ − f₋₁)/2` and the tensor-product cross terms), and a
 tricubic Hermite built from exactly those is separable Catmull-Rom, which
-pyDVC evaluates directly. The real pair confirms it: binned by the fractional
-part of the displacement, the mean pyDVC − CCPi difference is flat (all bins
+zvDVC evaluates directly. The real pair confirms it: binned by the fractional
+part of the displacement, the mean zvDVC − CCPi difference is flat (all bins
 within −0.004 to +0.0003 voxel on every axis), where a different interpolant
 would trace an S-curve of ±0.03.
 
@@ -173,33 +173,33 @@ on each dataset.
 
 **Storage.** A blurred u8 volume rounded back to u8 is as good as float32
 (σ = 1: max bias 0.0004 for float32, 16-bit and 8-bit; slope 0.0023,
-0.0023, 0.0034; sample-set uncertainty 0.0248 for all three). pyDVC
+0.0023, 0.0034; sample-set uncertainty 0.0248 for all three). zvDVC
 therefore keeps the volume's dtype: no extra memory, and u8 volumes keep the
 packed loads.
 
-**In pyDVC:** `volumes.prefilter_sigma` (default 0, CCPi parity). Bricks are
+**In zvDVC:** `volumes.prefilter_sigma` (default 0, CCPi parity). Bricks are
 read with a 4σ margin, filtered and cropped, so tiles meet without seams; the
 filter runs on the GPU in z-slabs. On case A, σ = 1 takes 5.9 s per 2.4 GB
 volume, and the central grid's result shifts by ≤ 0.003 voxel on average,
 with statuses unchanged and sample-set uncertainty 0.032 → 0.025 in the full
 wavefront run. Results stores record σ; a resumed run with another σ is
-refused. `pydvc check full` includes a prefiltered central-grid step.
+refused. `zvdvc check full` includes a prefiltered central-grid step.
 
 ## Consequences
 
 * **For users.** On data like this, precision is set by the sample count.
   CCPi's default of 8 000 gives ~0.03 voxel per axis; 32 000 gives ~0.016 at
   about 4× the solve time, still seconds for a few thousand points on a GPU.
-  pyDVC reports this sampling uncertainty with results when asked:
+  zvDVC reports this sampling uncertainty with results when asked:
   `uncertainty_seeds: 2` in the run config repeats each GOOD point with two
   other template seeds and stores the per-axis spread as `displacement_sd`
   (case A: RMS 0.033, 0.031, 0.032 voxel, matching section 3; 0.3 s extra on
-  the central grid). `pydvc strain` propagates it into a strain uncertainty.
+  the central grid). `zvdvc strain` propagates it into a strain uncertainty.
 * **For validation.** The Q1 criterion "median |Δu| ≤ 0.05 against CCPi" is
   set below the difference between two correct solvers at CCPi's own
   settings. A criterion that can fail for the right reasons: mean difference
-  ≤ 0.01 voxel per axis, and a spread no larger than pyDVC's own seed-to-seed
-  spread. pyDVC passes both against CCPi on case A.
+  ≤ 0.01 voxel per axis, and a spread no larger than zvDVC's own seed-to-seed
+  spread. zvDVC passes both against CCPi on case A.
 * **Bias, and strain.** The ±0.03 S-curve is systematic and does not average
   out. Its slope reaches ~0.19 voxel of bias per voxel of fractional
   displacement (between 0.5 and 0.6 above). Strain is the gradient of

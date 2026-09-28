@@ -5,10 +5,10 @@ import dataclasses
 import numpy as np
 import pytest
 
-from pydvc.config import VolumeSpec
-from pydvc.geometry.box import Box
-from pydvc.io import volume as vol
-from pydvc.solver.engines import gpu_available
+from zvdvc.config import VolumeSpec
+from zvdvc.geometry.box import Box
+from zvdvc.io import volume as vol
+from zvdvc.solver.engines import gpu_available
 
 
 def _spec(tmp_path, dtype=np.uint8, sigma=1.0, shape=(40, 36, 44)):
@@ -59,10 +59,10 @@ def test_device_bricks_are_filtered_on_the_device(tmp_path):
 
 
 def test_prefiltered_solve_recovers_a_known_field(tmp_path):
-    from pydvc.bench.metrics import compare_arrays
-    from pydvc.config import RunConfig, SearchSpec, SubvolumeSpec
-    from pydvc.pipeline.inmemory import load_points, solve_in_memory
-    from pydvc.synth.phantoms import default_field, make_case
+    from zvdvc.bench.metrics import compare_arrays
+    from zvdvc.config import RunConfig, SearchSpec, SubvolumeSpec
+    from zvdvc.pipeline.inmemory import load_points, solve_in_memory
+    from zvdvc.synth.phantoms import default_field, make_case
 
     shape = (64, 64, 64)
     cfg = RunConfig.from_yaml(make_case(tmp_path / "c", shape_zyx=shape, field=default_field("affine", shape), spacing=12.0,

@@ -1,0 +1,87 @@
+Bootstrap: docker
+From: @BASE_IMAGE@
+
+# zvDVC with its GPU path (cupy, NVRTC, nvCOMP), the numba CPU engine, the CUDA
+# emulator's compiler, profilers (Nsight Systems/Compute), fio, and CCPi dvc
+# 22.0.0 for comparisons.
+#
+# A template: containers/build.sh fills in the @...@ placeholders and builds it:
+#     bash containers/build.sh --cuda 12.4
+#
+# The CUDA *devel* base is deliberate. CuPy compiles zvDVC's kernels at run time
+# with NVRTC and includes CUDA headers; the devel image ships NVRTC and headers
+# of one version, so they cannot mismatch (on the workstation a conda NVRTC
+# picking up older system headers broke CuPy's reductions). Python comes from uv
+# (zvDVC needs 3.11+; Ubuntu 22.04 ships 3.10), and cupy from the pip wheel
+# only, never a second copy. Everything lives under /opt and %post ends with a
+# chmod, so the image runs for any uid.
+
+%labels
+    Name zvdvc
+    Description GPU digital volume correlation (zvDVC), cluster build
+    CUDA @CUDA@
+    zvDVC-commit @COMMIT@
+
+%files
+    @REPO@/pyproject.toml /opt/zvdvc-src/pyproject.toml
+    @REPO@/README.md      /opt/zvdvc-src/README.md
+    @REPO@/LICENSE        /opt/zvdvc-src/LICENSE
+    @REPO@/src            /opt/zvdvc-src/src
+    @REPO@/scripts        /opt/zvdvc-src/scripts
+    @REPO@/tests          /opt/zvdvc-src/tests
+    @REPO@/configs        /opt/zvdvc-src/configs
+
+%environment
+    export PATH=/opt/venv/bin:/opt/nsight/bin:$PATH
+    export CUDA_PATH=/usr/local/cuda
+    export ZVDVC_CCPI_DVC=/opt/ccpi-dvc/bin/dvc
+    export ZVDVC_SRC=/opt/zvdvc-src
+    export ZVDVC_COMMIT=@COMMIT@
+    # A ~/.local site-packages from the host must not shadow the image.
+    export PYTHONNOUSERSITE=1
+    export PYTHONUNBUFFERED=1
+    # No locale in the image: without these, Python's default text encoding is ASCII.
+    export LANG=C.UTF-8
+    export PYTHONUTF8=1
+
+%post
+    set -eu
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update
+    apt-get install -y --no-install-recommends \
+        build-essential git curl ca-certificates bzip2 fio libgomp1
+    # Profilers from NVIDIA's CUDA apt repository (already configured in the base
+    # image). Optional: the build carries on without them.
+    CUDA_DASH=$(echo "@CUDA@" | tr . -)
+    apt-get install -y --no-install-recommends "cuda-nsight-systems-$CUDA_DASH" "cuda-nsight-compute-$CUDA_DASH" \
+        || echo "WARNING: Nsight packages not installed; profiling runs will be skipped"
+    mkdir -p /opt/nsight/bin
+    for tool in nsys ncu; do
+        found=$(ls /opt/nvidia/nsight-*/bin/$tool /usr/local/cuda/bin/$tool /opt/nvidia/nsight-*/*/bin/$tool 2>/dev/null | head -1 || true)
+        [ -n "$found" ] && ln -sf "$found" /opt/nsight/bin/$tool || true
+    done
+    rm -rf /var/lib/apt/lists/*
+
+    curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/opt/uv UV_NO_MODIFY_PATH=1 sh
+    export UV_PYTHON_INSTALL_DIR=/opt/python
+    /opt/uv/uv python install 3.12
+    /opt/uv/uv venv --python 3.12 --seed /opt/venv
+    PIP="/opt/venv/bin/python -m pip"
+    $PIP install --no-cache-dir --upgrade pip setuptools wheel
+
+    # cupy from its CUDA 12 wheel (it uses the base image's NVRTC and headers),
+    # nvCOMP for zarr-vectors' GPU codecs, then zvDVC with the numba CPU engine,
+    # TIFF input and the test suite. zarr-vectors comes from GitHub at the commit
+    # pyproject.toml pins, so compute nodes need no network.
+    $PIP install --no-cache-dir "cupy-cuda12x==@CUPY@" nvidia-nvcomp-cu12
+    $PIP install --no-cache-dir "/opt/zvdvc-src[test,cpu-fast,tiff]"
+    $PIP check || true
+
+    # CCPi dvc 22.0.0 (the reference; 25.0.0's tricubic path is broken).
+    bash /opt/zvdvc-src/scripts/get_ccpi_dvc.sh 22.0.0 0 /opt/ccpi-dvc
+
+    chmod -R a+rX /opt
+
+%test
+    /opt/venv/bin/python -c "import zvdvc, cupy, numba, zarr_vectors; print('zvdvc', zvdvc.__file__, 'cupy', cupy.__version__)"
+    test -x /opt/ccpi-dvc/bin/dvc

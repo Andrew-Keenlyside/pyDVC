@@ -1,6 +1,6 @@
 import numpy as np
 
-from pydvc.kernels import interpolate
+from zvdvc.kernels import interpolate
 
 SHAPE = (24, 20, 16)                              # (z, y, x)
 rng = np.random.default_rng(1)

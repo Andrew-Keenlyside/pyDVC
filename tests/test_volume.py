@@ -1,9 +1,9 @@
 import numpy as np
 import pytest
 
-from pydvc.config import VolumeSpec
-from pydvc.geometry.box import Box
-from pydvc.io.volume import RawVolume, ZarrVolume, create_ome_zarr, open_volume, write_raw
+from zvdvc.config import VolumeSpec
+from zvdvc.geometry.box import Box
+from zvdvc.io.volume import RawVolume, ZarrVolume, create_ome_zarr, open_volume, write_raw
 
 VOL = (np.arange(12 * 10 * 8) * 7 % 4096).astype("<u2").reshape(12, 10, 8)     # (z, y, x)
 
@@ -54,7 +54,7 @@ def test_ome_zarr_round_trip_and_open_volume(tmp_path):
 
 
 def test_convert_to_ome_zarr_from_big_endian_raw_and_npy(tmp_path):
-    from pydvc.io.volume import convert_to_ome_zarr
+    from zvdvc.io.volume import convert_to_ome_zarr
 
     VOL.astype(">u2").tofile(tmp_path / "v.raw")
     np.save(tmp_path / "v.npy", VOL)

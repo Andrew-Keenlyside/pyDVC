@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from pydvc.post.strain import compute_strain, fit_strain, planar_axis
+from zvdvc.post.strain import compute_strain, fit_strain, planar_axis
 
 G_TRUE = np.array([[0.010, -0.004, 0.002], [0.003, -0.006, 0.001], [-0.002, 0.005, 0.008]])
 
@@ -99,7 +99,7 @@ def test_strain_sd_is_calibrated():
 
 
 def test_strain_from_a_disp_file_writes_ccpi_csv(tmp_path):
-    from pydvc.ccpi_dropin import write_disp
+    from zvdvc.ccpi_dropin import write_disp
 
     xyz = _grid()
     write_disp(tmp_path / "run.disp", np.arange(1, len(xyz) + 1), xyz, np.zeros(len(xyz), dtype=int),
@@ -116,7 +116,7 @@ def test_matches_ccpi_strain_on_interior_points(tmp_path):
     if not exe.exists() and shutil.which("strain") is None:
         pytest.skip("CCPi strain not installed")
     exe = exe if exe.exists() else Path(shutil.which("strain"))
-    from pydvc.ccpi_dropin import write_disp
+    from zvdvc.ccpi_dropin import write_disp
 
     rng = np.random.default_rng(1)
     # jittered, so no two neighbours are equidistant: on a regular 3D grid a 25-point window always ends

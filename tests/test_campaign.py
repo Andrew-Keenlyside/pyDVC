@@ -4,8 +4,8 @@ import json
 
 import pytest
 
-from pydvc.bench import campaign
-from pydvc.bench.campaign import Campaign
+from zvdvc.bench import campaign
+from zvdvc.bench.campaign import Campaign
 
 
 def _c(tmp_path, **kw):

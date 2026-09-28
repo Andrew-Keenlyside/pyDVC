@@ -4,9 +4,9 @@ import numpy as np
 import pytest
 
 from _fields import wave_field, whole_brick
-from pydvc.config import SearchSpec, SubvolumeSpec
-from pydvc.geometry.templates import make_template
-from pydvc.solver.gauss_newton import solve_batch
+from zvdvc.config import SearchSpec, SubvolumeSpec
+from zvdvc.geometry.templates import make_template
+from zvdvc.solver.gauss_newton import solve_batch
 
 pytestmark = pytest.mark.gpu
 
@@ -49,10 +49,10 @@ def test_gpu_pipeline_matches_the_cpu_engine(tmp_path):
     """M3 on a GPU: bricks read to the device, fused kernels, results store; parity with the CPU engine."""
     import dataclasses
 
-    from pydvc.config import ClusterSpec, RunConfig, SeedingSpec
-    from pydvc.io.results import ResultStore
-    from pydvc.pipeline import coordinator
-    from pydvc.synth.phantoms import default_field, make_case
+    from zvdvc.config import ClusterSpec, RunConfig, SeedingSpec
+    from zvdvc.io.results import ResultStore
+    from zvdvc.pipeline import coordinator
+    from zvdvc.synth.phantoms import default_field, make_case
 
     shape = (80, 80, 80)
     config = make_case(tmp_path / "case", shape_zyx=shape, field=default_field("affine", shape), spacing=8.0,
@@ -86,7 +86,7 @@ def test_fused_threshold_and_basin_search_match_numpy():
     """The status bookkeeping around the solve (threshold test, basin grid search) on real cupy arrays."""
     import cupy as cp
 
-    from pydvc.config import ThresholdSpec
+    from zvdvc.config import ThresholdSpec
 
     (ref, dfm), (ref_g, dfm_g) = _wave_bricks()
     rng = np.random.default_rng(3)
@@ -119,10 +119,10 @@ def test_fused_solve_is_deterministic():
 
 
 def test_inmemory_wavefront_on_fused_matches_the_cpu_engine(tmp_path):
-    """The in-memory wavefront runner (parity mode, `pydvc seed`) on a GPU engine: host results, parity with cpu."""
-    from pydvc.config import RunConfig
-    from pydvc.pipeline.inmemory import load_points, solve_in_memory
-    from pydvc.synth.phantoms import default_field, make_case
+    """The in-memory wavefront runner (parity mode, `zvdvc seed`) on a GPU engine: host results, parity with cpu."""
+    from zvdvc.config import RunConfig
+    from zvdvc.pipeline.inmemory import load_points, solve_in_memory
+    from zvdvc.synth.phantoms import default_field, make_case
 
     shape = (80, 80, 80)
     config = make_case(tmp_path / "case", shape_zyx=shape, field=default_field("affine", shape), spacing=8.0,
@@ -145,7 +145,7 @@ def test_fused_packed_loads_on_an_odd_sized_misaligned_brick(dtype):
     import cupy as cp
 
     from test_fused import ODD, _u8_odd_case
-    from pydvc.io.volume import is_padded
+    from zvdvc.io.volume import is_padded
 
     ref, deformed, centres = _u8_odd_case(dtype)
     template = make_template(SubvolumeSpec(geometry="sphere", size=12, n_samples=400))
@@ -168,8 +168,8 @@ def test_fused_packed_loads_on_an_odd_sized_misaligned_brick(dtype):
 def test_device_bricks_are_padded_and_used_without_a_copy():
     import cupy as cp
 
-    from pydvc.io.volume import is_padded, to_device
-    from pydvc.solver.engines import make_engine
+    from zvdvc.io.volume import is_padded, to_device
+    from zvdvc.solver.engines import make_engine
 
     host = np.arange(np.prod((5, 7, 9)), dtype=np.uint8).reshape(5, 7, 9)
     dev = to_device(host)

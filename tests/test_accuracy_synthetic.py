@@ -7,10 +7,10 @@ are the same pipeline on 96^3 so the suite stays fast.
 import numpy as np
 import pytest
 
-from pydvc.bench.metrics import against_truth
-from pydvc.config import RunConfig, SearchSpec, SubvolumeSpec
-from pydvc.pipeline.inmemory import Results, run_in_memory
-from pydvc.synth.phantoms import DisplacementField, default_field, make_case
+from zvdvc.bench.metrics import against_truth
+from zvdvc.config import RunConfig, SearchSpec, SubvolumeSpec
+from zvdvc.pipeline.inmemory import Results, run_in_memory
+from zvdvc.synth.phantoms import DisplacementField, default_field, make_case
 
 # sinusoid: wavelength long enough for an affine subvolume (k r ~ 0.4 at radius 12)
 LONG_SINE = DisplacementField("sinusoid", {"amplitude": 1.0, "wavelength": 192.0, "axis": 0, "component": 0})
@@ -38,7 +38,7 @@ def test_synthetic_accuracy(tmp_path, kind, dof, noise, rmse_max):
 
 
 def test_results_round_trip_and_disp_export(tmp_path):
-    from pydvc.io.ccpi import read_disp
+    from zvdvc.io.ccpi import read_disp
 
     res = Results(
         point_id=np.array([1, 2]), xyz=np.ones((2, 3)), status=np.array([0, -1], dtype=np.int8),

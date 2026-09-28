@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from pydvc.bench import density
+from zvdvc.bench import density
 
 
 def test_fit_recovers_t0_tau_c():

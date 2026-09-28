@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from pydvc.geometry import warp
+from zvdvc.geometry import warp
 
 rng = np.random.default_rng(0)
 OFFSETS = rng.uniform(-10.0, 10.0, size=(50, 3))

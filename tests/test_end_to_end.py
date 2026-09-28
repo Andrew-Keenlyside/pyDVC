@@ -2,10 +2,10 @@
 
 import pytest
 
-from pydvc.bench.metrics import against_truth
-from pydvc.config import RunConfig
-from pydvc.pipeline import coordinator
-from pydvc.synth.phantoms import DisplacementField, make_case
+from zvdvc.bench.metrics import against_truth
+from zvdvc.config import RunConfig
+from zvdvc.pipeline import coordinator
+from zvdvc.synth.phantoms import DisplacementField, make_case
 
 pytestmark = pytest.mark.slow
 

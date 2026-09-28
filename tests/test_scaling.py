@@ -4,9 +4,9 @@ import dataclasses
 
 import pytest
 
-from pydvc.bench.scaling import scaling
-from pydvc.config import ClusterSpec, RunConfig, SearchSpec, SeedingSpec, SubvolumeSpec
-from pydvc.synth.phantoms import default_field, make_case
+from zvdvc.bench.scaling import scaling
+from zvdvc.config import ClusterSpec, RunConfig, SearchSpec, SeedingSpec, SubvolumeSpec
+from zvdvc.synth.phantoms import default_field, make_case
 
 
 @pytest.fixture(scope="module")

@@ -2,10 +2,10 @@ import numpy as np
 import pytest
 
 from _fields import wave_field, whole_brick
-from pydvc.config import SearchSpec, SubvolumeSpec
-from pydvc.geometry.templates import make_template
-from pydvc.solver.gauss_newton import solve_batch
-from pydvc.status import PointStatus
+from zvdvc.config import SearchSpec, SubvolumeSpec
+from zvdvc.geometry.templates import make_template
+from zvdvc.solver.gauss_newton import solve_batch
+from zvdvc.status import PointStatus
 
 SHAPE = (64, 64, 64)
 CENTRES = np.array([[32.0, 32.0, 32.0], [28.0, 36.0, 30.0]])
@@ -59,7 +59,7 @@ def test_featureless_subvolume_is_singular():
 
 
 def test_threshold_and_convergence_reporting():
-    from pydvc.config import ThresholdSpec
+    from zvdvc.config import ThresholdSpec
 
     ref = whole_brick(wave_field(SHAPE))
     deformed = whole_brick(wave_field(SHAPE, shift_xyz=(0.7, 0.0, 0.0)))
@@ -109,14 +109,14 @@ def test_float32_path_matches_the_float64_reference(dof, kind):
 
 
 def _shifted(box):
-    from pydvc.geometry.box import Box
+    from zvdvc.geometry.box import Box
 
     return Box(tuple(v + 1000 for v in box.lo), tuple(v + 1000 for v in box.hi))
 
 
 def test_basin_search_recovers_a_displacement_far_from_the_seed():
-    from pydvc.geometry.box import Box
-    from pydvc.synth.phantoms import DisplacementField, speckle_field, warp_volume
+    from zvdvc.geometry.box import Box
+    from zvdvc.synth.phantoms import DisplacementField, speckle_field, warp_volume
 
     u = np.array([6.4, -5.6, 4.8])                            # |u| = 9.7: beyond plain GN's capture range
     f = speckle_field(Box((0, 0, 0), SHAPE))

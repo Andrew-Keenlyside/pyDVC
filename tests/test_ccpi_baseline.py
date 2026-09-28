@@ -3,16 +3,16 @@
 import numpy as np
 import pytest
 
-from pydvc.bench import ccpi_baseline
-from pydvc.config import RunConfig, SearchSpec, SubvolumeSpec
-from pydvc.synth.phantoms import DisplacementField, make_case
+from zvdvc.bench import ccpi_baseline
+from zvdvc.config import RunConfig, SearchSpec, SubvolumeSpec
+from zvdvc.synth.phantoms import DisplacementField, make_case
 
 
 def _dvc_or_skip():
     try:
         return ccpi_baseline.find_dvc()
     except FileNotFoundError:
-        pytest.skip("CCPi dvc not installed (conda ccpi-dvc, or set PYDVC_CCPI_DVC)")
+        pytest.skip("CCPi dvc not installed (conda ccpi-dvc, or set ZVDVC_CCPI_DVC)")
 
 
 def test_thread_counts():
@@ -33,7 +33,7 @@ def test_ccpi_recovers_a_translation_given_rigid_trans(tmp_path):
     cfg = RunConfig.from_yaml(config)
     single = ccpi_baseline.run_ccpi(cfg, workdir=tmp_path / "run", omp_threads=1)
     split = ccpi_baseline.run_ccpi(cfg, workdir=tmp_path / "run", omp_threads=1, processes=2)
-    from pydvc.io.ccpi import read_disp
+    from zvdvc.io.ccpi import read_disp
 
     for r in (single, split):
         d = read_disp(r.disp_path)

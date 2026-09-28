@@ -5,12 +5,12 @@ import dataclasses
 import numpy as np
 import pytest
 
-from pydvc.config import ClusterSpec, RunConfig, SearchSpec, SeedingSpec, SubvolumeSpec
+from zvdvc.config import ClusterSpec, RunConfig, SearchSpec, SeedingSpec, SubvolumeSpec
 
 
 @pytest.fixture(scope="module")
 def cfg(tmp_path_factory):
-    from pydvc.synth.phantoms import default_field, make_case
+    from zvdvc.synth.phantoms import default_field, make_case
 
     root = tmp_path_factory.mktemp("uncertainty")
     shape = (72, 72, 72)
@@ -31,7 +31,7 @@ def _backend():
 
 
 def test_repeat_solve_sd_matches_the_spread_of_independent_runs(cfg):
-    from pydvc.pipeline.inmemory import load_points, solve_in_memory
+    from zvdvc.pipeline.inmemory import load_points, solve_in_memory
 
     pid, xyz = load_points(cfg)
     r = solve_in_memory(dataclasses.replace(cfg, uncertainty_seeds=3), pid, xyz, backend=_backend())
@@ -48,8 +48,8 @@ def test_repeat_solve_sd_matches_the_spread_of_independent_runs(cfg):
 
 
 def test_the_tiled_pipeline_writes_displacement_sd(cfg, tmp_path):
-    from pydvc.io.results import ResultStore
-    from pydvc.pipeline import coordinator
+    from zvdvc.io.results import ResultStore
+    from zvdvc.pipeline import coordinator
 
     c = dataclasses.replace(cfg, output=str(tmp_path / "r.zarrvectors"), workdir=str(tmp_path / "w"), uncertainty_seeds=2)
     coordinator.prepare(c, backend=_backend())
@@ -60,9 +60,9 @@ def test_the_tiled_pipeline_writes_displacement_sd(cfg, tmp_path):
 
 
 def test_without_repeats_the_store_holds_nan_and_older_stores_still_work(cfg, tmp_path):
-    from pydvc.io import results as results_mod
-    from pydvc.io.results import ResultStore
-    from pydvc.pipeline import coordinator
+    from zvdvc.io import results as results_mod
+    from zvdvc.io.results import ResultStore
+    from zvdvc.pipeline import coordinator
 
     c = dataclasses.replace(cfg, output=str(tmp_path / "a.zarrvectors"), workdir=str(tmp_path / "wa"))
     coordinator.prepare(c, backend=_backend())
@@ -82,8 +82,8 @@ def test_without_repeats_the_store_holds_nan_and_older_stores_still_work(cfg, tm
 
 
 def test_strain_uses_the_per_point_uncertainty(tmp_path):
-    from pydvc.pipeline.inmemory import Results
-    from pydvc.post.strain import compute_strain
+    from zvdvc.pipeline.inmemory import Results
+    from zvdvc.post.strain import compute_strain
 
     ax = np.arange(9) * 8.0
     xyz = np.stack(np.meshgrid(ax, ax, ax, indexing="ij"), -1).reshape(-1, 3)

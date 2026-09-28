@@ -1,14 +1,14 @@
 #!/bin/sh
-# Run pyDVC's quick checks (~3 min) before every push. Opt in, once per clone:
+# Run zvDVC's quick checks (~3 min) before every push. Opt in, once per clone:
 #
 #     git config core.hooksPath scripts/hooks
 #
-# Skip once with `git push --no-verify`. PYDVC_ENV names the conda environment
-# (default pydvc-gpu); set PYDVC_ENV=none to use the current Python instead.
+# Skip once with `git push --no-verify`. ZVDVC_ENV names the conda environment
+# (default zvdvc-gpu); set ZVDVC_ENV=none to use the current Python instead.
 set -e
 cd "$(git rev-parse --show-toplevel)"
-env_name="${PYDVC_ENV:-pydvc-gpu}"
+env_name="${ZVDVC_ENV:-zvdvc-gpu}"
 if [ "$env_name" != "none" ] && command -v conda >/dev/null 2>&1; then
-    exec conda run -n "$env_name" --no-capture-output pydvc check quick
+    exec conda run -n "$env_name" --no-capture-output zvdvc check quick
 fi
-exec pydvc check quick
+exec zvdvc check quick
