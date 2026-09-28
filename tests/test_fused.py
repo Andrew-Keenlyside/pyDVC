@@ -5,10 +5,10 @@ import numpy as np
 import pytest
 
 from _fields import wave_field, whole_brick
-from pydvc.config import SearchSpec, SubvolumeSpec
-from pydvc.geometry.templates import make_template
-from pydvc.solver.gauss_newton import solve_batch
-from pydvc.status import PointStatus
+from zvdvc.config import SearchSpec, SubvolumeSpec
+from zvdvc.geometry.templates import make_template
+from zvdvc.solver.gauss_newton import solve_batch
+from zvdvc.status import PointStatus
 
 SHAPE = (48, 48, 48)
 U = (0.6, -0.3, 0.2)
@@ -43,7 +43,7 @@ def _compare(backend, dtype, dof, kind, interpolation, n_points, n_samples, **en
 
 
 def _emulator_or_skip():
-    from pydvc.kernels.cuda.emulate import compiler
+    from zvdvc.kernels.cuda.emulate import compiler
 
     if compiler() is None:
         pytest.skip("no C++20 compiler for the CUDA emulator")
@@ -63,7 +63,7 @@ def test_emulated_cuda_kernels_match_numpy(dof, kind, interpolation, dtype):
     _emulator_or_skip()
     if interpolation == "nearest":
         # nearest has no gradient: only the value path (reference and final samples) is meaningful
-        from pydvc.solver.engines import make_engine
+        from zvdvc.solver.engines import make_engine
 
         ref, _, centres = _case(dtype, 4)
         template = make_template(SubvolumeSpec(geometry="sphere", size=12, n_samples=200))
@@ -114,17 +114,17 @@ def test_basin_search_on_the_fused_engines():
 
 def test_cuda_source_compiles_with_nvrtc():
     nvrtc = pytest.importorskip("cupy_backends.cuda.libs.nvrtc")
-    from pydvc.kernels.cuda import SOURCE
+    from zvdvc.kernels.cuda import SOURCE
 
     prog = nvrtc.createProgram(SOURCE.read_text(), "fused_gn.cu", [], [])
     exprs = [
-        "pydvc::gn_sums<6, 4, 2, unsigned short>",
-        "pydvc::gn_sums<12, 1, 2, float>",
-        "pydvc::gn_solve<12, 4>",
-        "pydvc::sample_values<3, 1, unsigned char>",
-        "pydvc::gn_sums<6, 4, 2, unsigned char>",          # u8 tricubic: the packed row loads
-        "pydvc::sample_values<6, 2, unsigned char>",
-        "pydvc::sample_values<6, 2, unsigned short>",
+        "zvdvc::gn_sums<6, 4, 2, unsigned short>",
+        "zvdvc::gn_sums<12, 1, 2, float>",
+        "zvdvc::gn_solve<12, 4>",
+        "zvdvc::sample_values<3, 1, unsigned char>",
+        "zvdvc::gn_sums<6, 4, 2, unsigned char>",          # u8 tricubic: the packed row loads
+        "zvdvc::sample_values<6, 2, unsigned char>",
+        "zvdvc::sample_values<6, 2, unsigned short>",
     ]
     for e in exprs:
         nvrtc.addNameExpression(prog, e)
@@ -173,7 +173,7 @@ def test_packed_row_loads_at_the_end_of_an_odd_sized_brick(dtype):
 
 
 def test_padded_empty_is_aligned_with_a_readable_tail():
-    from pydvc.io.volume import PAD_BYTES, padded_empty
+    from zvdvc.io.volume import PAD_BYTES, padded_empty
 
     a = padded_empty(ODD, np.uint8)
     assert a.flags.c_contiguous and a.ctypes.data % 16 == 0 and a.shape == ODD

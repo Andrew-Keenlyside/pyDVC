@@ -3,9 +3,9 @@
 import numpy as np
 import pytest
 
-from pydvc.io.ccpi import write_roi
-from pydvc.io.pointcloud import PointCloud, bin_index, import_points, write_pointcloud_store
-from pydvc.io.results import OPTIONAL_ATTRIBUTES, RESULT_ATTRIBUTES, ResultStore
+from zvdvc.io.ccpi import write_roi
+from zvdvc.io.pointcloud import PointCloud, bin_index, import_points, write_pointcloud_store
+from zvdvc.io.results import OPTIONAL_ATTRIBUTES, RESULT_ATTRIBUTES, ResultStore
 
 BOUNDS = ((0.0, 0.0, 0.0), (256.0, 256.0, 256.0))
 rng = np.random.default_rng(11)
@@ -107,5 +107,15 @@ def test_results_store_protects_itself(cloud, tmp_path):
         ro.write_tile(tile, _fake_results(tile, 3))
     with pytest.raises(ValueError, match="missing"):
         ResultStore(out, mode="r+").write_tile(tile, {"status": np.zeros(len(tile.point_id))})
-    with pytest.raises(ValueError, match="not a pyDVC results store"):
+    with pytest.raises(ValueError, match="not a zvDVC results store"):
         ResultStore(cloud.path)
+
+
+def test_results_store_written_by_pydvc_still_opens(cloud, tmp_path):
+    import zarr
+
+    out = tmp_path / "results.zarrvectors"
+    ResultStore.allocate(out, points=cloud, dof=6)
+    attrs = zarr.open_group(str(out), mode="r+", zarr_format=3).attrs
+    attrs["pydvc_results"] = attrs.pop("zvdvc_results")    # the key before the rename
+    assert ResultStore(out).dof == 6

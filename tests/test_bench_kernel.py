@@ -3,8 +3,8 @@
 import numpy as np
 import pytest
 
-from pydvc.bench import kernel
-from pydvc.config import SubvolumeSpec
+from zvdvc.bench import kernel
+from zvdvc.config import SubvolumeSpec
 
 
 @pytest.mark.parametrize("backend", ["cpu", "numpy32"])
@@ -26,7 +26,7 @@ def test_rel_err_ignores_sums_that_cancel_to_zero():
 
 
 def test_grid_points_start_at_the_centre():
-    from pydvc.bench.case_a import grid_points
+    from zvdvc.bench.case_a import grid_points
 
     pid, xyz = grid_points(10.0, ((0.0, 0.0, 0.0), (40.0, 40.0, 20.0)))
     assert len(pid) == len(xyz) == 5 * 5 * 3 and pid[0] == 1

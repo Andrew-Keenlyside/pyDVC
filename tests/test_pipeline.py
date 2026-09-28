@@ -6,11 +6,11 @@ import json
 import numpy as np
 import pytest
 
-from pydvc.bench.metrics import against_truth
-from pydvc.config import ClusterSpec, RunConfig, SearchSpec, SeedingSpec, SubvolumeSpec
-from pydvc.io.results import ResultStore
-from pydvc.pipeline import coordinator
-from pydvc.synth.phantoms import default_field, make_case
+from zvdvc.bench.metrics import against_truth
+from zvdvc.config import ClusterSpec, RunConfig, SearchSpec, SeedingSpec, SubvolumeSpec
+from zvdvc.io.results import ResultStore
+from zvdvc.pipeline import coordinator
+from zvdvc.synth.phantoms import default_field, make_case
 
 SHAPE = (80, 80, 80)
 
@@ -66,7 +66,7 @@ def test_pipeline_end_to_end(case, strategy):
 
 def test_tiled_run_reproduces_the_whole_volume_solve_bit_for_bit(case):
     """M3 acceptance (on the CPU engine): bricks and tiles change nothing in the arithmetic."""
-    from pydvc.pipeline.inmemory import solve_in_memory
+    from zvdvc.pipeline.inmemory import solve_in_memory
 
     cfg = _variant(case, "bitwise", seeding=SeedingSpec(strategy="rigid"))
     coordinator.prepare(cfg, backend=_backend())
@@ -79,8 +79,8 @@ def test_tiled_run_reproduces_the_whole_volume_solve_bit_for_bit(case):
 
 
 def test_resume_skips_written_tiles_and_gives_the_same_store(case):
-    from pydvc.pipeline.tiling import load_plan
-    from pydvc.pipeline.worker import QueueSource, TileWorker
+    from zvdvc.pipeline.tiling import load_plan
+    from zvdvc.pipeline.worker import QueueSource, TileWorker
 
     full = _variant(case, "full", seeding=SeedingSpec(strategy="rigid"))
     coordinator.prepare(full, backend=_backend())
@@ -101,7 +101,7 @@ def test_resume_skips_written_tiles_and_gives_the_same_store(case):
 
 
 def test_plan_records_versions_and_boxes(case):
-    from pydvc.pipeline.tiling import plan_document
+    from zvdvc.pipeline.tiling import plan_document
 
     cfg = _variant(case, "plan", seeding=SeedingSpec(strategy="rigid"))
     coordinator.prepare(cfg, backend=_backend())
@@ -132,8 +132,8 @@ def test_a_changed_template_cannot_be_mixed_into_existing_results(case):
 
 
 def test_the_worker_refuses_a_store_written_with_another_template(case):
-    from pydvc.io.results import _ATTR, _root_attrs
-    from pydvc.pipeline.worker import TileWorker
+    from zvdvc.io.results import _ATTR, _root_attrs
+    from zvdvc.pipeline.worker import TileWorker
 
     cfg = _variant(case, "doctored", seeding=SeedingSpec(strategy="rigid"))
     coordinator.prepare(cfg, backend=_backend())

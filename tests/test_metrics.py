@@ -1,9 +1,9 @@
 import numpy as np
 import pytest
 
-from pydvc.bench import metrics
-from pydvc.io.ccpi import write_disp
-from pydvc.status import PointStatus
+from zvdvc.bench import metrics
+from zvdvc.io.ccpi import write_disp
+from zvdvc.status import PointStatus
 
 
 def test_compare_arrays():
@@ -42,7 +42,7 @@ def test_against_truth(tmp_path):
 
 
 def test_agreement_with_another_code_counts_points_good_in_both():
-    from pydvc.bench.metrics import compare_arrays
+    from zvdvc.bench.metrics import compare_arrays
 
     ours = np.array([0, 0, -1, 0])            # GOOD, GOOD, RANGE_FAIL, GOOD
     theirs = np.array([0, -1, 0, 0])          # CCPi codes
@@ -54,7 +54,7 @@ def test_agreement_with_another_code_counts_points_good_in_both():
 
 
 def test_edge_mask_flags_subvolumes_that_leave_the_volume():
-    from pydvc.bench.metrics import edge_mask
+    from zvdvc.bench.metrics import edge_mask
 
     xyz = np.array([[50.0, 50.0, 50.0], [95.0, 50.0, 50.0], [50.0, 50.0, 50.0], [3.0, 50.0, 50.0]])
     disp = np.array([[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [44.0, 0.0, 0.0], [0.0, 0.0, 0.0]])
@@ -62,8 +62,8 @@ def test_edge_mask_flags_subvolumes_that_leave_the_volume():
     np.testing.assert_array_equal(edge_mask(xyz, disp, (100, 100, 100), 6.0), [False, True, True, True])
 
 
-def test_revised_q1_judges_bias_and_spread_against_pydvcs_own():
-    from pydvc.bench.compare_ccpi import revised_q1
+def test_revised_q1_judges_bias_and_spread_against_zvdvcs_own():
+    from zvdvc.bench.compare_ccpi import revised_q1
 
     rng = np.random.default_rng(0)
     n = 4000

@@ -5,7 +5,7 @@
 | Term | Meaning |
 |---|---|
 | **point** | A search location (CCPi "search point"). Its result is a displacement plus the full parameter vector. |
-| **template** | The sample offsets that define a subvolume (cube lattice or random sphere). pyDVC uses one per run. |
+| **template** | The sample offsets that define a subvolume (cube lattice or random sphere). zvDVC uses one per run. |
 | **sample** | One template offset, warped and interpolated. M samples per point (`subvol_npts`). |
 | **seed** | The starting displacement for a point. |
 | **cell** | One zarr-vectors chunk of the point-cloud grid. The atomic unit of storage. |
@@ -46,13 +46,13 @@ OpenMP parallelises only *inside* steps 2.1–2.5. Section 3 of
             │ ref.ome.zarr  def.ome.zarr      │  dense, sharded, native dtype
             │ points.zarrvectors (or .roi)    │  zarr-vectors point cloud
             └──────────────┬─────────────────┘
- pydvc plan      (1 proc)  │  metadata only → plan.json (tiles, brick boxes, costs, node shares)
+ zvdvc plan      (1 proc)  │  metadata only → plan.json (tiles, brick boxes, costs, node shares)
                            │  ResultStore.allocate (create arrays, defer presence)
- pydvc seed      (1 GPU)   │  rigid: nothing │ coarse: sub-grid on pyramid level 1 → seeds.zarr
+ zvdvc seed      (1 GPU)   │  rigid: nothing │ coarse: sub-grid on pyramid level 1 → seeds.zarr
                            │  wavefront: whole solve, shell by shell (parity mode)
- pydvc run       (N GPUs)  │  per GPU: tiles from a queue → bricks → batches → write cells
- pydvc repair    (N GPUs)  │  failed points with good neighbours → re-seed → re-solve their tiles
- pydvc finalize  (1 proc)  │  rebuild presence, metadata, .stat, optional .disp / pyramid
+ zvdvc run       (N GPUs)  │  per GPU: tiles from a queue → bricks → batches → write cells
+ zvdvc repair    (N GPUs)  │  failed points with good neighbours → re-seed → re-solve their tiles
+ zvdvc finalize  (1 proc)  │  rebuild presence, metadata, .stat, optional .disp / pyramid
                            ▼
             results.zarrvectors: same cells, same rows as points.zarrvectors
 ```
@@ -90,14 +90,14 @@ the tile size, zstd, and a multiscale pyramid, since the coarse seeding pass
 reads level 1. Bricks stay in their native dtype on the device. The read path
 is kvikio/GPUDirect Storage, then zarr-python's GPU buffers, then host decode
 into pinned memory with one copy up
-([`io/volume.py`](../src/pydvc/io/volume.py)). CCPi raw, npy and mhd inputs
-are converted once with `pydvc convert`. As of M3 the host-decode path is the
+([`io/volume.py`](../src/zvdvc/io/volume.py)). CCPi raw, npy and mhd inputs
+are converted once with `zvdvc convert`. As of M3 the host-decode path is the
 one implemented; the other two are optimisations to measure against it.
 
 ### Points and results: zarr-vectors
 
 zarr-vectors is a format for **vector geometry**: points, lines, meshes and
-skeletons. It does not store the dense images. In pyDVC it does four jobs:
+skeletons. It does not store the dense images. In zvDVC it does four jobs:
 
 1. **The work partition.** A zarr-vectors store is cut into a spatial chunk
    grid. Tiles are unions of chunks, so a tile's input rows and output rows
@@ -122,25 +122,25 @@ skeletons. It does not store the dense images. In pyDVC it does four jobs:
 Constraints taken from upstream, which is under active development:
 
 * The dependency is pinned to a gpu-backend commit.
-* pyDVC imports only `zarr_vectors.api` and `zarr_vectors.building`.
-  Bin assignment (`spatial.chunking.assign_bins`) is internal, so pyDVC
+* zvDVC imports only `zarr_vectors.api` and `zarr_vectors.building`.
+  Bin assignment (`spatial.chunking.assign_bins`) is internal, so zvDVC
   assigns bins itself (two bins per axis, eight fragments per cell, numbered
   C-order over (x, y, z) as zarr-vectors' validator expects). A cell's rows
   are its fragments in order, so the results store reproduces the input's
   fragments from positions alone.
-* pyDVC's run layout (DOF, grid, source points) sits in the results store's
-  root attributes under `pydvc_results`.
-* `decode="device"` for zstd is used only on stores pyDVC wrote itself.
+* zvDVC's run layout (DOF, grid, source points) sits in the results store's
+  root attributes under `zvdvc_results`.
+* `decode="device"` for zstd is used only on stores zvDVC wrote itself.
   nvCOMP trusts its input, and zarr-vectors' guide documents crashes on
   corrupt frames.
-* All zarr-vectors access goes through `pydvc.io`, so API changes are
+* All zarr-vectors access goes through `zvdvc.io`, so API changes are
   absorbed in one place.
 
 ## 6. Seeding
 
 CCPi's neighbour-average seeding makes point *k* depend on points *0..k−1*.
-pyDVC replaces the serial order
-([`solver/seeding.py`](../src/pydvc/solver/seeding.py)):
+zvDVC replaces the serial order
+([`solver/seeding.py`](../src/zvdvc/solver/seeding.py)):
 
 | Strategy | Parallelism | Use |
 |---|---|---|
@@ -158,7 +158,7 @@ enough GOOD neighbours from the neighbours' median, and solves them again.
   stopping rules (`|Δobj| < 1e-6` or `|Δu| < 0.01`, at most 20 iterations),
   but with an analytic Jacobian `∇g(x′)ᵀ ∂x′/∂p` and a batched Cholesky
   solve. `∂x′/∂p` follows CCPi's warp `x′ = c + t + (I + E)·R·d`
-  ([`geometry/warp.py`](../src/pydvc/geometry/warp.py)).
+  ([`geometry/warp.py`](../src/zvdvc/geometry/warp.py)).
 * **Exact normalisation derivative.** For ZSSD, NSSD and ZNSSD the normal
   equations use the exact Jacobian of the normalised residual. Holding the
   target mean and norm fixed within an iteration, the common shortcut, shifts
@@ -166,14 +166,14 @@ enough GOOD neighbours from the neighbours' median, and solves them again.
   zero under noise. CCPi differentiates the full objective numerically, so the
   exact form is also the parity choice. It costs two more per-point sums
   (`Σj`, `Σĝj`, ndof each) in the same pass
-  ([`kernels/objective.py`](../src/pydvc/kernels/objective.py)).
+  ([`kernels/objective.py`](../src/zvdvc/kernels/objective.py)).
 * **IC-GN (M5).** Inverse compositional. The Hessian comes from the
   reference once per point, and each iteration needs target values only.
 * **Interpolation.** Separable Catmull-Rom, which equals CCPi's
   Lekien–Marsden tricubic with central-difference derivatives (M1 verifies
   this), plus trilinear and nearest.
 * **Objectives.** CCPi's five, with identical scaling
-  ([`kernels/objective.py`](../src/pydvc/kernels/objective.py)).
+  ([`kernels/objective.py`](../src/zvdvc/kernels/objective.py)).
 * **Precision.** float32 on device. Each point's brick-local centre is split
   into an integer voxel and a float32 fraction, and sample positions are
   formed from the fraction, so precision does not depend on the coordinate
@@ -183,21 +183,21 @@ enough GOOD neighbours from the neighbours' median, and solves them again.
   tree reduction give pairwise-summation error. Every result is checked
   against the float64 numpy reference in tests.
 * **Engines.** The Gauss–Newton loop is written once
-  ([`solver/gauss_newton.py`](../src/pydvc/solver/gauss_newton.py)); an
+  ([`solver/gauss_newton.py`](../src/zvdvc/solver/gauss_newton.py)); an
   engine supplies sampling, the one-pass sums, and the update
-  ([`solver/engines.py`](../src/pydvc/solver/engines.py)): `numpy` (float64
+  ([`solver/engines.py`](../src/zvdvc/solver/engines.py)): `numpy` (float64
   reference), `cupy` (unfused GPU), `fused` (CUDA kernels), `cpu` (the same
   fused step in numba, the restructured-CPU baseline) and `emulated` (the
   CUDA source run on the host, for tests).
 
 ## 8. GPU execution
 
-`pydvc run` starts one process per local GPU (spawn start method; each
+`zvdvc run` starts one process per local GPU (spawn start method; each
 process picks its device before touching CUDA), all pulling tile ids from one
 `multiprocessing` manager queue: dynamic scheduling within the node. Nodes take
 their LPT share from `plan.json` by rank (`SLURM_NODEID`, torchrun's
 `GROUP_RANK`, or Open MPI's rank ÷ local size) and never talk to each other
-([`pipeline/launch.py`](../src/pydvc/pipeline/launch.py)). The CPU engines use
+([`pipeline/launch.py`](../src/zvdvc/pipeline/launch.py)). The CPU engines use
 the same launcher, with `--cpu-workers` processes splitting the cores.
 
 Each worker process runs three streams:
@@ -208,8 +208,8 @@ Each worker process runs three streams:
 | compute | reference sampling, then fused GN steps and batched solves over the active set, batch after batch |
 | host thread | encodes and writes the previous tile's result cells through zarr-vectors (device encode where available) |
 
-The fused kernels ([`kernels/fused.py`](../src/pydvc/kernels/fused.py),
-[`kernels/cuda/fused_gn.cu`](../src/pydvc/kernels/cuda/fused_gn.cu)) never
+The fused kernels ([`kernels/fused.py`](../src/zvdvc/kernels/fused.py),
+[`kernels/cuda/fused_gn.cu`](../src/zvdvc/kernels/cuda/fused_gn.cu)) never
 write per-sample intermediates to global memory. `gn_sums` (one block per
 active point) reduces every sample to one row of normal-equation sums in a
 **single pass**, ZNSSD included, since the target mean and norm follow from
@@ -219,7 +219,7 @@ stragglers.
 
 Without a GPU the same `.cu` file is tested two ways: NVRTC compiles every
 specialisation (177, for `compute_90`), and a host emulator
-([`kernels/cuda/emulate.py`](../src/pydvc/kernels/cuda/emulate.py)) runs it
+([`kernels/cuda/emulate.py`](../src/zvdvc/kernels/cuda/emulate.py)) runs it
 with every CUDA thread as an OS thread (`__syncthreads` and warp shuffles
 included) against the numpy reference.
 
@@ -266,9 +266,9 @@ GPUs for time series (§11).
 * `plan.json` records the zarr-vectors commit, the template hash and the
   config, so a resumed run cannot silently mix settings.
 
-## 10. Where pyDVC diverges from CCPi
+## 10. Where zvDVC diverges from CCPi
 
-| Aspect | CCPi DVC | pyDVC | Effect |
+| Aspect | CCPi DVC | zvDVC | Effect |
 |---|---|---|---|
 | Point order / seeding | serial by distance; mean of GOOD among the 75 nearest already solved | wavefront shells (parity) or coarse field (production) | enables batching; parity is statistical, not bitwise |
 | Neighbour search | O(N²) full sort | KD-tree / GPU grid hash | millions of points in one run |
@@ -287,8 +287,8 @@ GPUs for time series (§11).
 * **Time series.** Keep the reference resident across the 8 GPUs, sharded by
   z-slab: 137 GB of 640 GB HBM. Only deformed frames stream in, halving I/O
   per frame.
-* **iDVC integration.** `pydvc ccpi dvc_config.txt` prints CCPi-style progress
-  lines, so iDVC can launch pyDVC in place of `dvc` without GUI changes.
+* **iDVC integration.** `zvdvc ccpi dvc_config.txt` prints CCPi-style progress
+  lines, so iDVC can launch zvDVC in place of `dvc` without GUI changes.
 * **Strain.** kNN least squares over results, tile-parallel with halo reads.
 * **Multi-node.** Already shaped by per-node LPT shares. Add a shared dynamic
   queue (file lock or Redis) if static shares leave nodes idle.

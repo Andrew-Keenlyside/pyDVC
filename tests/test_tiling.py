@@ -1,9 +1,9 @@
 import numpy as np
 
-from pydvc.config import ClusterSpec, RunConfig, SearchSpec, SubvolumeSpec, VolumeSpec
-from pydvc.geometry.box import Box
-from pydvc.io.pointcloud import PointCloud, write_pointcloud_store
-from pydvc.pipeline.tiling import Tile, assign_lpt, plan_tiles
+from zvdvc.config import ClusterSpec, RunConfig, SearchSpec, SubvolumeSpec, VolumeSpec
+from zvdvc.geometry.box import Box
+from zvdvc.io.pointcloud import PointCloud, write_pointcloud_store
+from zvdvc.pipeline.tiling import Tile, assign_lpt, plan_tiles
 
 
 def _contains(outer: Box, inner: Box) -> bool:

@@ -1,10 +1,10 @@
-"""M4 benchmark harness: case A volume handling, and the CCPi-vs-pyDVC comparison on a tiny case."""
+"""M4 benchmark harness: case A volume handling, and the CCPi-vs-zvDVC comparison on a tiny case."""
 
 import numpy as np
 import pytest
 
-from pydvc.bench import case_a
-from pydvc.config import SearchSpec, SubvolumeSpec
+from zvdvc.bench import case_a
+from zvdvc.config import SearchSpec, SubvolumeSpec
 
 
 def test_case_a_volume_layout(tmp_path, monkeypatch):
@@ -22,16 +22,16 @@ def test_case_a_volume_layout(tmp_path, monkeypatch):
 
 
 def test_compare_runs_both_codes_and_reports(tmp_path):
-    from pydvc.bench.ccpi_baseline import find_dvc
+    from zvdvc.bench.ccpi_baseline import find_dvc
 
     try:
         exe = find_dvc()
     except FileNotFoundError:
-        pytest.skip("CCPi dvc not installed (conda ccpi-dvc, or set PYDVC_CCPI_DVC)")
+        pytest.skip("CCPi dvc not installed (conda ccpi-dvc, or set ZVDVC_CCPI_DVC)")
     pytest.importorskip("numba")
-    from pydvc.bench.compare_ccpi import compare
-    from pydvc.config import RunConfig
-    from pydvc.synth.phantoms import DisplacementField, make_case
+    from zvdvc.bench.compare_ccpi import compare
+    from zvdvc.config import RunConfig
+    from zvdvc.synth.phantoms import DisplacementField, make_case
 
     config = make_case(
         tmp_path / "case", shape_zyx=(64, 64, 64), field=DisplacementField("affine", {"translation": (1.3, -0.6, 0.4)}),
@@ -41,6 +41,6 @@ def test_compare_runs_both_codes_and_reports(tmp_path):
     report = compare(RunConfig.from_yaml(config), tmp_path / "out", ccpi_exes=[exe], ccpi_processes=2,
                      backends=["cpu"], cli=True, truth=tmp_path / "case" / "truth.npz")
     names = [r["name"] for r in report["runs"]]
-    assert len(names) == 4 and sum("pyDVC" in n for n in names) == 2
+    assert len(names) == 4 and sum("zvDVC" in n for n in names) == 2
     assert all(a["q1_pass"] for k, a in report["agreement"].items() if "vs CCPi" in k)
-    assert (tmp_path / "out" / "report.md").read_text().startswith("# CCPi vs pyDVC")
+    assert (tmp_path / "out" / "report.md").read_text().startswith("# CCPi vs zvDVC")

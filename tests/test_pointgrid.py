@@ -1,8 +1,8 @@
 import numpy as np
 import pytest
 
-from pydvc.config import SubvolumeSpec
-from pydvc.geometry.pointgrid import grid_in_mask, lattice_spacing
+from zvdvc.config import SubvolumeSpec
+from zvdvc.geometry.pointgrid import grid_in_mask, lattice_spacing
 
 
 def test_lattice_spacing_from_overlap():

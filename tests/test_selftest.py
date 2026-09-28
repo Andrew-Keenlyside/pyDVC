@@ -1,6 +1,6 @@
 import pytest
 
-from pydvc.bench import smoke
+from zvdvc.bench import smoke
 
 
 def test_backend_choice():

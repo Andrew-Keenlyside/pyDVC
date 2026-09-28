@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from pydvc.kernels import objective
+from zvdvc.kernels import objective
 
 rng = np.random.default_rng(2)
 REF = rng.uniform(10.0, 200.0, size=(3, 500))

@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 from _fields import wave_field, whole_brick
-from pydvc.solver.engines import gpu_available, make_engine
+from zvdvc.solver.engines import gpu_available, make_engine
 
 BACKENDS = ["numpy", "numpy32", "cpu", "emulated", pytest.param("cupy", marks=pytest.mark.gpu),
             pytest.param("fused", marks=pytest.mark.gpu)]
@@ -14,7 +14,7 @@ def _engine(backend):
     if backend == "cpu":
         pytest.importorskip("numba")
     if backend == "emulated":
-        from pydvc.kernels.cuda.emulate import compiler
+        from zvdvc.kernels.cuda.emulate import compiler
 
         if compiler() is None:
             pytest.skip("no C++20 compiler for the CUDA emulator")
@@ -39,10 +39,10 @@ def test_a_host_engine_brick_is_not_taken_as_prepared_by_a_gpu_engine():
 
 
 def test_inmemory_wavefront_prepares_each_volume_once(tmp_path, monkeypatch):
-    from pydvc.config import RunConfig, SearchSpec, SubvolumeSpec
-    from pydvc.pipeline import inmemory
-    from pydvc.solver import gauss_newton
-    from pydvc.synth.phantoms import default_field, make_case
+    from zvdvc.config import RunConfig, SearchSpec, SubvolumeSpec
+    from zvdvc.pipeline import inmemory
+    from zvdvc.solver import gauss_newton
+    from zvdvc.synth.phantoms import default_field, make_case
 
     shape = (64, 64, 64)
     config = make_case(tmp_path / "case", shape_zyx=shape, field=default_field("rigid", shape), spacing=8.0,
