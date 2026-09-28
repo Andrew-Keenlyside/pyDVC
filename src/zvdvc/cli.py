@@ -181,7 +181,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--chunk", type=int, default=128)
     s.add_argument("--shard", type=int, default=1024)
     s.add_argument("--shape-xyz", type=int, nargs=3, metavar=("X", "Y", "Z"), help=".raw only: volume size")
-    s.add_argument("--dtype", help=".raw only: numpy dtype, e.g. '<u2' or '|u1'")
+    s.add_argument("--dtype", help=".raw only: numpy dtype, e.g. '<u2' or 'u1'")
     s.add_argument("--header", type=int, default=0, help=".raw only: header bytes to skip")
     s.set_defaults(func=cmd_convert)
 

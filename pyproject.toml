@@ -27,6 +27,11 @@ dependencies = [
     "zarr-vectors @ git+https://github.com/AllenInstitute/zarr-vectors-py.git@06a3bc8a08afefc02cd1ffb265d67a03df798b87",
 ]
 
+[project.urls]
+Documentation = "https://zvdvc.readthedocs.io"
+Repository = "https://github.com/Andrew-Keenlyside/zvDVC"
+Issues = "https://github.com/Andrew-Keenlyside/zvDVC/issues"
+
 [project.optional-dependencies]
 gpu = [
     "cupy-cuda12x>=13; sys_platform == 'linux'",

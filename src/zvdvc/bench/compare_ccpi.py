@@ -2,16 +2,20 @@
 
 Timed runs, each on the same machine, points and settings:
 
-``ccpi <v> iDVC``      ``dvc`` as iDVC launches it: one process, OpenMP on every core.
-``ccpi <v> xP``        ``P`` concurrent ``dvc`` processes on disjoint point subsets (1 thread
-                       each): the best a node gets from CCPi without code changes.
-``zvdvc <b> parity``   whole volumes in memory, CCPi point order (wavefront), in this
-                       process: read + solve, the like-for-like number.
-``zvdvc <b> cli``      ``zvdvc plan / seed / run / finalize`` as separate processes: what a
-                       user waits for, start-up (imports, kernel compilation) included.
+``ccpi <v> iDVC``
+    ``dvc`` as iDVC launches it: one process, OpenMP on every core.
+``ccpi <v> xP``
+    ``P`` concurrent ``dvc`` processes on disjoint point subsets (1 thread
+    each): the best a node gets from CCPi without code changes.
+``zvdvc <b> parity``
+    whole volumes in memory, CCPi point order (wavefront), in this
+    process: read + solve, the like-for-like number.
+``zvdvc <b> cli``
+    ``zvdvc plan / seed / run / finalize`` as separate processes: what a
+    user waits for, start-up (imports, kernel compilation) included.
 
 Agreement: zvDVC against each CCPi result point by point (the Q1 criteria:
-median |du| <= 0.05, p95 <= 0.2, status agreement >= 98 %), against a reference
+median ``|du|`` <= 0.05, p95 <= 0.2, status agreement >= 98 %), against a reference
 ``.disp`` if given, and against ground truth for synthetic cases.
 
 Command line::

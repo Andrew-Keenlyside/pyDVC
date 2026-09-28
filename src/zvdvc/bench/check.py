@@ -10,8 +10,9 @@ quick  the test suite without GPU and slow tests (the CUDA emulator    ~3 min
        included)
 gpu    ``-m gpu`` tests and ``zvdvc selftest``                          ~5 min
 full   ``-m slow`` tests; the kernel benchmark and, with case A data,  ~5 min
-       the central grid (4 680 points) on fused and cpu, again on fused
-       with a 1-voxel prefilter, and an 86 k point 3D grid on fused
+       the central grid (4 680 points) on fused and cpu, again on
+       fused with a 1-voxel prefilter, and an 86 k point 3D grid
+       on fused
 =====  ==============================================================  =========
 
 Results go to ``runs/check/<UTC time>-<commit>[-dirty]/check.json`` (and
@@ -24,7 +25,7 @@ Rules:
 
 * **Accuracy fails the check.** Tests and selftest must pass; kernel sums must
   be within 1e-4 of float64; case A results must agree with the baseline
-  arrays (status on >= 99.9 % of points, |du| <= 1e-3 voxel) and with CCPi no
+  arrays (status on >= 99.9 % of points, ``|du|`` <= 1e-3 voxel) and with CCPi no
   worse than the baseline (median and p95 +0.005 voxel, status agreement
   -0.2 %). Bit-identical results are expected but only warned about, and only
   when the software fingerprint matches the baseline's.
