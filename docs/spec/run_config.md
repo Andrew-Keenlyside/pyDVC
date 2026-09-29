@@ -103,6 +103,7 @@ fingerprint").
 | `raw_dtype` | string or null | `null` | from `vol_bit_depth` and `vol_endian` | numpy dtype of a `.raw` volume, e.g. `"\|u1"`, `"<u2"`, `">u2"`. Required for `.raw`. |
 | `raw_header_bytes` | int | `0` | `vol_hdr_lngth` | Bytes to skip at the start of a `.raw` file, $\ge 0$. The file must hold exactly this header plus the voxels ({doc}`volumes`). |
 | `prefilter_sigma` | float | `0.0` | | Gaussian low-pass (voxels) applied to both volumes as they are read, $\ge 0$; 0 is off, as in CCPi. About 1.0 removes most interpolation bias. Recorded in the results store; a resumed run with another value is refused. |
+| `gpu_io` | string | `"auto"` | | How bricks reach the GPU: `host` (host decode, one copy up), `kvikio` (read straight into GPU memory, through GPUDirect Storage where available; zstd decoded on the GPU) or `auto` (`kvikio` only when GPUDirect Storage is available; `$ZVDVC_GPU_IO` overrides). Does not change results and is not part of the run fingerprint. See {doc}`/how_to/gpudirect_storage`. |
 
 ### `subvolume`
 
@@ -207,6 +208,7 @@ volumes:
   raw_dtype: null                      # .raw only: e.g. "<u2" or "|u1"
   raw_header_bytes: 0                  # .raw only
   prefilter_sigma: 0.0                 # Gaussian low-pass (voxels); 0 = off, as CCPi
+  gpu_io: auto                         # host | kvikio | auto (kvikio when GPUDirect Storage is available)
 
 points: data/scan/points.roi           # .roi/.txt (imported by plan) or a .zarrvectors store
 output: runs/t00_t01/results.zarrvectors

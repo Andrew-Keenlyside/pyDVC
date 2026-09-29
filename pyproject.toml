@@ -37,8 +37,9 @@ gpu = [
     "cupy-cuda12x>=13; sys_platform == 'linux'",
     "zarr-vectors[gpu-codecs] @ git+https://github.com/AllenInstitute/zarr-vectors-py.git@06a3bc8a08afefc02cd1ffb265d67a03df798b87",
 ]
-gpu-io = [
+gpu-io = [   # the kvikio / GPUDirect Storage read path (zvdvc.io.gds); conda users: kvikio from rapidsai instead
     "zarr-vectors[gpu-io] @ git+https://github.com/AllenInstitute/zarr-vectors-py.git@06a3bc8a08afefc02cd1ffb265d67a03df798b87",
+    "nvidia-nvcomp-cu12; sys_platform == 'linux'",
 ]
 cpu-fast = ["numba>=0.59"]   # restructured-CPU baseline (kernels/cpu_fused.py)
 mpi = ["mpi4py>=3.1"]

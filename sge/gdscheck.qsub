@@ -1,0 +1,56 @@
+#!/bin/bash
+# What a pryor GPU node offers for GPUDirect Storage: NVIDIA's gdscheck, the nvidia-fs driver,
+# the filesystems data could be read from, and zvDVC's own verdict inside zvdvc.sif.
+#
+#   qsub sge/gdscheck.qsub                        (from the zvDVC checkout; one GPU, a few minutes)
+#
+# The log answers: can this node use GDS at all (nvidia-fs loaded, NVMe "Supported" in gdscheck),
+# and from which storage (project storage is usually a network filesystem; $TMPDIR is node-local).
+
+# ---- Grid Engine resources ------------------------------------------------
+#$ -N zvdvc_gdscheck
+#$ -l h_rt=00:15:00
+#$ -l gpu=true,gpu_type=h100
+#$ -pe gpu 1
+#$ -l tmem=16G
+#$ -o /home/akeenlys/storage_main/bridge_project_data/logs/$JOB_NAME.$JOB_ID.log   # dir must already exist
+#$ -S /bin/bash
+#$ -cwd
+#$ -j y
+
+set -uo pipefail
+
+SIF="${SIF:-/home/akeenlys/storage_main/bridge_project_data/containers/zvdvc.sif}"
+STORAGE="${STORAGE:-/home/akeenlys/storage_main/bridge_project_data}"
+
+section() { printf '\n==== %s ====\n' "$1"; }
+
+section "node"
+hostname; uname -r; echo "CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-unset}"
+nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader
+
+section "nvidia-fs driver"
+lsmod | grep -E "^nvidia_fs|^nvidia " || true
+[ -e /proc/driver/nvidia-fs/stats ] && echo "nvidia-fs: loaded" || echo "nvidia-fs: NOT loaded (no GDS on this node)"
+
+section "gdscheck -p"
+GDSCHECK="$(ls -1 /usr/local/cuda*/gds/tools/gdscheck 2>/dev/null | sort -V | tail -1)"
+if [ -n "$GDSCHECK" ]; then "$GDSCHECK" -p; else echo "gdscheck not found under /usr/local/cuda*/gds/tools"; fi
+
+section "IOMMU"
+grep -o "iommu=[^ ]*\|intel_iommu=[^ ]*\|amd_iommu=[^ ]*" /proc/cmdline || echo "no iommu option on the kernel command line"
+
+section "filesystems (GDS needs local NVMe with ext4/XFS, or a supported parallel filesystem)"
+for p in "$STORAGE" "${TMPDIR:-/tmp}" /tmp; do
+    [ -e "$p" ] && findmnt -no TARGET,SOURCE,FSTYPE,OPTIONS -T "$(readlink -f "$p")" | sed "s|^|$p: |"
+done
+lsblk -d -o NAME,ROTA,TRAN,SIZE,MODEL 2>/dev/null | grep -v "^loop"
+
+section "zvDVC's verdict (inside $SIF)"
+if [ -r "$SIF" ]; then
+    apptainer exec --nv --cleanenv --bind "$STORAGE" "$SIF" \
+        python -c "from zvdvc.io import gds; import json; print(json.dumps(gds.status(), indent=1))" \
+        || echo "(the image predates zvdvc.io.gds, or lacks kvikio: rebuild it)"
+else
+    echo "no image at $SIF"
+fi

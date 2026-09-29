@@ -135,11 +135,13 @@ different shapes.
 | dtype | the scanner's native type (u8 or u16) | bricks stay in it on the device |
 | pyramid | a multiscale pyramid, level 1 downsampled by 2 | for the planned pyramid-level coarse seeding pass (M5); `zvdvc convert` writes level `"0"` only today |
 
-The brick read path implemented today is host decode (zarr-python reads a
-shard's chunks concurrently) into pinned memory, then one host-to-device copy
-per brick. Reading through kvikio/GPUDirect Storage or zarr-python's GPU
-buffers is planned and has **not** been implemented or measured; see
-{doc}`/how_to/gpudirect_storage`.
+Bricks reach the GPU by one of two paths, chosen by `volumes.gpu_io`: host
+decode (zarr-python reads a shard's chunks concurrently) into pinned memory
+and one host-to-device copy, or kvikio reading the stored bytes straight into
+GPU memory (GPUDirect Storage where available) with zstd decoded on the GPU by
+nvCOMP. Both give identical bricks. The kvikio path reads flat files and
+sharded Zarr v3 arrays on a local directory, which is what `zvdvc convert`
+writes; see {doc}`/how_to/gpudirect_storage`.
 
 ### `zvdvc convert`
 

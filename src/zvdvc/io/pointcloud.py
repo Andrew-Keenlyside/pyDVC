@@ -12,8 +12,11 @@ Store layout (level 0)::
 
 * ``chunk_shape`` is chosen so ``cluster.tile_shape`` is an integer multiple of it.
 * Tile reads use ``zarr_vectors.building.read_cells(level, cells,
-  ["vertices", "vertex_attributes/point_id"], device="cuda")``. The result is a
-  ``CellBatch`` whose ``offsets`` are CSR over cells, delivered to the GPU in one pooled read.
+  ["vertices", "vertex_attributes/point_id"])``, one pooled read on the host whose
+  ``offsets`` are CSR over cells. Each cell's bins are worked out on the host from
+  those rows, and a tile's points are a few MB against gigabytes of bricks, so they
+  stay on the host read path; ``device="cuda"`` copies them up afterwards.
+  zarr-vectors' own device read (kvikio, nvCOMP) is not used here.
 * Large clouds are written with zarr-vectors' three-phase HPC pattern:
   ``create_store`` + ``defer_presence``, then workers write disjoint cells with
   ``write_chunk_vertices(..., record_presence=False)``, then ``rebuild_presence``.
@@ -50,6 +53,7 @@ class TilePoints:
     cells: list[CellCoord]     # the tile's cells, in read order
     cell_offsets: Any          # (len(cells) + 1,) CSR offsets into xyz / point_id (host)
     bin_offsets: Any           # per cell, (n_bins + 1,) fragment offsets within the cell (host), so results reuse the input's fragments
+    io: tuple[str, ...] = ()   # how zarr-vectors served each array ("host", "pinned-host", ...), when it reports it
 
 
 def _bins_per_chunk(chunk_shape: tuple[float, ...], bin_shape: tuple[float, ...]) -> tuple[int, int, int]:
@@ -90,6 +94,35 @@ def cell_fragments(xyz: np.ndarray, cell: CellCoord, chunk_shape: tuple[float, .
     order = np.argsort(b, kind="stable")
     offsets = np.concatenate([[0], np.cumsum(np.bincount(b, minlength=nbins))])
     return order, offsets
+
+
+def _zv_features() -> frozenset[str]:
+    import zarr_vectors as zv
+
+    return frozenset(getattr(zv, "FEATURES", ()))
+
+
+def _stored_bins(fragments: Any, cell_offsets: np.ndarray, n_bins: int) -> list[np.ndarray] | None:
+    """Each cell's (n_bins + 1,) bin offsets from the fragment index ``read_cells(fragments=True)`` returns.
+
+    zvDVC writes every cell as ``n_bins`` range fragments that tile its rows in bin order, empty
+    bins included (:func:`cell_fragments`), so the offsets are 0 and the running sum of the counts.
+    Any other layout (explicit fragments, a different bin count, gaps) returns None and the caller
+    re-bins from the coordinates.
+    """
+    if fragments is None:
+        return None
+    co, starts, counts = (np.asarray(getattr(fragments, k), dtype=np.int64) for k in ("cell_offsets", "starts", "counts"))
+    out = []
+    for i in range(len(cell_offsets) - 1):
+        a, b = int(co[i]), int(co[i + 1])
+        c = counts[a:b]
+        offsets = np.concatenate([[0], np.cumsum(c)])
+        if b - a != n_bins or (c < 0).any() or not np.array_equal(starts[a:b], offsets[:-1]) \
+                or offsets[-1] != cell_offsets[i + 1] - cell_offsets[i]:
+            return None
+        out.append(offsets)
+    return out
 
 
 def read_roi(path: str | Path) -> tuple[np.ndarray, np.ndarray]:
@@ -241,6 +274,7 @@ class PointCloud:
         meta = zb.read_root_metadata(self._root)
         self._chunk = tuple(float(v) for v in meta.chunk_shape)
         self._bin = tuple(float(v) for v in (meta.base_bin_shape or self._chunk))
+        self._nbins = int(np.prod(_bins_per_chunk(self._chunk, self._bin)))
         self.bounds = (tuple(meta.bounds[0]), tuple(meta.bounds[1]))
         self._n = int(zb.read_level_metadata(self._root, 0).vertex_count)
 
@@ -272,24 +306,30 @@ class PointCloud:
         from zarr_vectors import building as zb
 
         cells = [tuple(int(v) for v in c) for c in cells]
+        with_fragments = "read-cells-fragments" in _zv_features()
         batch = zb.read_cells(
             self._level, np.asarray(cells, dtype=np.int64).reshape(-1, 3), ["vertices", "vertex_attributes/point_id"],
-            on_error="raise",
+            on_error="raise", **({"fragments": True} if with_fragments else {}),
         )
         xyz = np.asarray(batch["vertices"].data, dtype=np.float32).reshape(-1, 3)
         point_id = np.asarray(batch["vertex_attributes/point_id"].data, dtype=np.int64).reshape(-1)
         cell_offsets = np.asarray(batch["vertices"].offsets, dtype=np.int64)
+        stored = _stored_bins(getattr(batch, "fragments", None), cell_offsets, self._nbins) if with_fragments else None
         bins = []
         for i, cell in enumerate(cells):
+            if stored is not None:
+                bins.append(stored[i])        # the store's own fragment index: no re-binning, no bin-edge ambiguity
+                continue
             rows = xyz[cell_offsets[i]:cell_offsets[i + 1]]
             _, offsets = cell_fragments(rows, cell, self._chunk, self._bin)
             bins.append(offsets)
+        io = tuple(getattr(a, "path", str(a)) for a in getattr(batch, "io", ()) or ())
         if device == "cuda":
             from zvdvc.kernels.xp import get_xp
 
             cp = get_xp("cuda")
             xyz, point_id = cp.asarray(xyz), cp.asarray(point_id)
-        return TilePoints(xyz=xyz, point_id=point_id, cells=cells, cell_offsets=cell_offsets, bin_offsets=bins)
+        return TilePoints(xyz=xyz, point_id=point_id, cells=cells, cell_offsets=cell_offsets, bin_offsets=bins, io=io)
 
     def read_all(self, *, device: Device = "cpu") -> tuple[Any, Any]:
         """Every point, as ``(xyz, point_id)``, in cell order. Used for kNN and seeding on the coordinator."""

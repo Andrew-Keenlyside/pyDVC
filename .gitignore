@@ -20,3 +20,4 @@ runs/
 *.stat
 docs/_build/
 .claude/worktrees/
+cufile.log

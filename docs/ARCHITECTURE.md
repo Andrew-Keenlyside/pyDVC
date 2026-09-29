@@ -87,12 +87,15 @@ for `T = 1024, h = 36`.
 
 Dense volumes are stored as OME-Zarr v3: 128³ chunks inside shards aligned to
 the tile size, zstd, and a multiscale pyramid, since the coarse seeding pass
-reads level 1. Bricks stay in their native dtype on the device. The read path
-is kvikio/GPUDirect Storage, then zarr-python's GPU buffers, then host decode
-into pinned memory with one copy up
-([`io/volume.py`](../src/zvdvc/io/volume.py)). CCPi raw, npy and mhd inputs
-are converted once with `zvdvc convert`. As of M3 the host-decode path is the
-one implemented; the other two are optimisations to measure against it.
+reads level 1. Bricks stay in their native dtype on the device. Two read
+paths, chosen by `volumes.gpu_io`: host decode into pinned memory with one copy
+up ([`io/volume.py`](../src/zvdvc/io/volume.py)), or kvikio reading the stored
+bytes straight into GPU memory, through GPUDirect Storage where the system has
+it, with zstd decoded on the GPU by nvCOMP
+([`io/gds.py`](../src/zvdvc/io/gds.py)). zarr-python's GPU buffers were
+considered and not used: zarr decodes zstd on the CPU, so compressed bytes would
+go to the GPU and back. CCPi raw, npy and mhd inputs can be read on either path
+or converted once with `zvdvc convert`.
 
 ### Points and results: zarr-vectors
 

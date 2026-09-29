@@ -24,7 +24,8 @@ pip install -e ".[test,cpu-fast]"
 # GPU (CUDA 12 driver): the same; cupy comes from conda, the GPU codecs from pip
 micromamba create -f envs/zvdvc-gpu.yml && micromamba activate zvdvc-gpu
 pip install -e ".[test,cpu-fast]"
-pip install nvidia-nvcomp-cu12            # zarr-vectors' GPU codecs; NOT the [gpu-codecs] extra (see below)
+pip install nvidia-nvcomp-cu12            # GPU zstd decoding; NOT the [gpu-codecs] extra (see below)
+mamba install -c rapidsai -c conda-forge kvikio   # optional: the GPUDirect Storage read path (docs/how_to/gpudirect_storage.md)
 
 # CCPi dvc 22.0.0 for the baselines, either as a conda environment ...
 micromamba create -f envs/ccpi-dvc.yml

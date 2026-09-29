@@ -82,6 +82,7 @@ class WorkerStats:
     seconds_write_wait: float = 0.0    # compute loop blocked on a full write queue
     errors: list[str] = field(default_factory=list)
     tiles_written: int = 0             # solved and written to the results store
+    io: str = ""                       # how bricks reached the device: "host", "kvikio" or "mixed" (zvdvc.io.gds)
 
 
 @dataclass
@@ -92,6 +93,7 @@ class _Loaded:
     points: Any
     bytes_read: int
     error: str | None = None
+    io: str = "host"
 
 
 _END = object()
@@ -134,7 +136,9 @@ class TileWorker:
         from zvdvc.profiling import EventLog
 
         self.events = EventLog.for_worker(cfg.workdir, device)
-        self.events.record("worker_start", t=time.time(), device=device, backend=self.backend, pid=os.getpid())
+        self.events.record("worker_start", t=time.time(), device=device, backend=self.backend, pid=os.getpid(),
+                           io={w: getattr(v, "io", "host") for w, v in (("reference", self.ref_vol), ("deformed", self.def_vol))},
+                           io_note=getattr(self.ref_vol, "io_note", None) or getattr(self.def_vol, "io_note", None))
 
     # -------------------------------------------------------------- stages
 
@@ -149,8 +153,10 @@ class TileWorker:
                 deformed = self.def_vol.read_brick(tile.def_box, device=dev)
                 pts = self.points.read_tile(list(tile.cells), device="cpu")
             nbytes = int(ref.data.nbytes + deformed.data.nbytes)
-            self.events.record("read", tile=tile.id, t0=t0, t1=time.time(), bytes=nbytes)
-            return _Loaded(tile, ref, deformed, pts, nbytes)
+            io = getattr(ref, "io", "host") if getattr(ref, "io", "host") == getattr(deformed, "io", "host") else "mixed"
+            self.events.record("read", tile=tile.id, t0=t0, t1=time.time(), bytes=nbytes, io=io,
+                               points_io=list(getattr(pts, "io", ())))      # zarr-vectors' per-array read paths
+            return _Loaded(tile, ref, deformed, pts, nbytes, io=io)
         except Exception:
             self.events.record("read_failed", tile=tile.id, t0=t0, t1=time.time())
             return _Loaded(tile, None, None, None, 0, traceback.format_exc())
@@ -264,6 +270,7 @@ class TileWorker:
             stats.tiles += 1
             stats.points += len(res["status"])
             stats.bytes_read += loaded.bytes_read
+            stats.io = loaded.io if stats.io in ("", loaded.io) else "mixed"
             values, counts = np.unique(res["status"], return_counts=True)
             for v, c in zip(values.tolist(), counts.tolist()):
                 stats.status_counts[v] = stats.status_counts.get(v, 0) + c
