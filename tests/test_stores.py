@@ -119,3 +119,70 @@ def test_results_store_written_by_pydvc_still_opens(cloud, tmp_path):
     attrs = zarr.open_group(str(out), mode="r+", zarr_format=3).attrs
     attrs["pydvc_results"] = attrs.pop("zvdvc_results")    # the key before the rename
     assert ResultStore(out).dof == 6
+
+
+def test_duplicate_point_ids_are_rejected(tmp_path):
+    ids = IDS[:20].copy()
+    ids[[3, 7, 9]] = ids[[2, 6, 6]]
+    with pytest.raises(ValueError, match=r"2 point ids occur more than once \(3, 7\)"):
+        write_pointcloud_store(tmp_path / "p.zarrvectors", XYZ[:20], ids, bounds=BOUNDS, chunk_shape=(64.0,) * 3)
+    write_roi(tmp_path / "p.roi", ids, XYZ[:20] / 4.0)
+    with pytest.raises(ValueError, match="more than once"):
+        import_points(tmp_path / "p.roi", tmp_path / "q.zarrvectors", volume_shape_zyx=(64, 64, 64), chunk_shape=(16.0,) * 3)
+    assert not (tmp_path / "p.zarrvectors").exists() and not (tmp_path / "q.zarrvectors").exists()
+
+
+def test_non_finite_and_empty_point_clouds_are_rejected(tmp_path):
+    from zvdvc.io.pointcloud import read_roi
+
+    (tmp_path / "nan.roi").write_text("1\t15.5\t15.5\t15.5\n2\tnan\t15.5\t15.5\n")
+    with pytest.raises(ValueError, match=r"nan.roi:2: point 2 has a non-finite coordinate"):
+        read_roi(tmp_path / "nan.roi")
+    xyz = XYZ[:5].copy()
+    xyz[3, 1] = np.inf
+    with pytest.raises(ValueError, match="non-finite coordinates, e.g. point 4"):
+        write_pointcloud_store(tmp_path / "p.zarrvectors", xyz, IDS[:5], bounds=BOUNDS, chunk_shape=(64.0,) * 3)
+    (tmp_path / "empty.roi").write_text("n x y z\n")
+    with pytest.raises(ValueError, match="empty.roi: no points"):
+        read_roi(tmp_path / "empty.roi")
+
+
+def test_a_cell_without_its_status_does_not_count_as_written(cloud, tmp_path):
+    from zvdvc.io.pointcloud import write_cell
+
+    store = ResultStore.allocate(tmp_path / "results.zarrvectors", points=cloud, dof=6)
+    tile = cloud.read_tile(cloud.cells()[:2], device="cpu")
+    store.write_tile(tile, _fake_results(tile, 6))
+    other = cloud.read_tile(cloud.cells()[2:3], device="cpu")
+    values = {k: v for k, v in _fake_results(other, 6).items() if k != "status"} | {"point_id": other.point_id}
+    write_cell(store._level, other.cells[0], other.xyz, values, other.bin_offsets[0])   # killed before the status
+    assert store.written_cells() == set(cloud.cells()[:2])
+
+
+def test_cells_written_after_a_partial_finalize_are_seen(cloud, tmp_path):
+    store = ResultStore.allocate(tmp_path / "results.zarrvectors", points=cloud, dof=3)
+    cells = cloud.cells()
+    first = cloud.read_tile(cells[:10], device="cpu")
+    store.write_tile(first, _fake_results(first, 3))
+    store.finalize(n_points=len(first.point_id))
+    store = ResultStore(store.path, mode="r+")
+    store.reopen_for_writes()
+    rest = cloud.read_tile(cells[10:], device="cpu")
+    ResultStore(store.path, mode="r+").write_tile(rest, _fake_results(rest, 3))
+    assert store.written_cells() == set(cells) and len(store.read_all()["point_id"]) == cloud.n_points
+
+
+def test_the_fingerprint_is_checked_and_older_stores_only_warn(cloud, tmp_path):
+    from zvdvc.io.results import _ATTR, _root_attrs, fingerprint_diff
+
+    fp = {"settings": {"search": {"objective": "znssd", "disp_max": 8.0}}, "points": {"digest": "ab"}}
+    store = ResultStore.allocate(tmp_path / "results.zarrvectors", points=cloud, dof=6, fingerprint=fp)
+    store.check_fingerprint(fp)
+    other = {"settings": {"search": {"objective": "ssd", "disp_max": 8.0}}, "points": {"digest": "cd"}}
+    assert fingerprint_diff(fp, other) == ["points.digest", "settings.search.objective"]
+    with pytest.raises(ValueError, match=r"differs in points.digest, settings.search.objective.*original config"):
+        ResultStore(store.path).check_fingerprint(other)
+    attrs = _root_attrs(store.path, "r+")
+    attrs[_ATTR] = {k: v for k, v in attrs[_ATTR].items() if k != "fingerprint"}   # a store from before fingerprints
+    with pytest.warns(UserWarning, match="no run fingerprint"):
+        ResultStore(store.path).check_fingerprint(other)

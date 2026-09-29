@@ -1,6 +1,7 @@
 """M4: node discovery, the per-node tile queue across processes, and recovery from a killed worker."""
 
 import dataclasses
+import json
 import os
 import signal
 import subprocess
@@ -33,6 +34,25 @@ def test_node_info_from_schedulers():
     assert _rank({}) == (0, 1)
     with pytest.raises(ValueError):
         node_info({"SLURM_NODEID": "3", "SLURM_JOB_NUM_NODES": "2"})
+
+
+def test_shared_source_requeues_a_failed_tile_once():
+    import queue
+    import threading
+
+    from zvdvc.pipeline.launch import _SharedSource
+
+    ids, attempts, failed = queue.Queue(), {}, []
+    tile = type("T", (), {"id": 4})()
+    src = _SharedSource({4: tile}, ids, attempts, failed, threading.Lock())
+    ids.put(4)
+    assert src.next() is tile and src.next() is None
+    src.done(tile, False)
+    assert src.next() is tile and failed == []           # requeued once
+    src.done(tile, False)
+    assert src.next() is None and failed == [4]
+    src.done(tile, True)
+    assert failed == [4]
 
 
 @pytest.fixture(scope="module")
@@ -87,32 +107,37 @@ def test_killed_worker_then_resubmit_gives_the_same_store(case):
     crashed.to_yaml(cfg_file)
     job = subprocess.Popen(
         [sys.executable, "-c",
-         "from zvdvc.config import RunConfig; from zvdvc.pipeline import coordinator; "
-         f"coordinator.run(RunConfig.from_yaml({str(cfg_file)!r}), backend='cpu', cpu_workers=2)"],
+         f"import sys; from zvdvc.cli import main; sys.exit(main(['run', {str(cfg_file)!r}, '--backend', 'cpu', "
+         "'--cpu-workers', '2']))"],
     )
-    pid_file = Path(crashed.workdir) / "workers" / "slot0.pid"
-    store = None
+    workdir = Path(crashed.workdir)
+    pid_file = workdir / "workers" / "slot0.pid"
+    store = ResultStore(crashed.output)
     deadline = time.time() + 300
     killed = False
     while time.time() < deadline and job.poll() is None:
-        if pid_file.exists():
-            if store is None and Path(crashed.output).exists():
-                store = ResultStore(crashed.output)
-            if store is not None and len(store.written_cells()) > 0:
-                os.kill(int(pid_file.read_text()), signal.SIGKILL)
+        if pid_file.exists() and store.written_cells():
+            pid = int(pid_file.read_text())
+            events = [json.loads(line) for log in workdir.glob(f"events/*/worker-*-d0-p{pid}.jsonl")
+                      for line in log.read_text().splitlines() if line.endswith("}")]
+            reads = {e["tile"] for e in events if e["ev"] == "read"}
+            if reads - {e["tile"] for e in events if e["ev"] == "write"}:     # slot 0 holds an unwritten tile
+                os.kill(pid, signal.SIGKILL)
                 killed = True
                 break
-        time.sleep(0.02)
-    assert job.wait(timeout=300) == 0          # the node's run survives a lost worker
+        time.sleep(0.01)
+    code = job.wait(timeout=300)
     assert killed
-    import json
-
-    first = json.loads((Path(crashed.workdir) / "run_stats.json").read_text())
+    first = json.loads((workdir / "run_stats.json").read_text())
     missing = first["missing_tiles"]
-    print(f"killed worker left {len(missing)} of 8 tiles missing")
+    assert missing and code == 3                # the node's run survives a lost worker, and says tiles are missing
+    assert any("exited with code -9" in e for w in first["workers"] for e in w["errors"])
+    assert json.loads((workdir / "failed_tiles.json").read_text())["missing"] == missing
+    assert sum(w["tiles_written"] for w in first["workers"]) == 8 - len(missing)
     stats = coordinator.run(crashed, backend="cpu")
-    assert sum(s.tiles for s in stats) == len(missing)                  # only the missing tiles
-    assert json.loads((Path(crashed.workdir) / "run_stats.json").read_text())["missing_tiles"] == []
+    assert sum(s.tiles for s in stats) == sum(s.tiles_written for s in stats) == len(missing)   # only the missing tiles
+    assert stats.missing == [] and json.loads((workdir / "run_stats.json").read_text())["missing_tiles"] == []
+    assert not (workdir / "failed_tiles.json").exists()
     a, b = _sorted(clean.output), _sorted(crashed.output)
     assert len(a["point_id"]) == len(b["point_id"])
     for name in ("point_id", "status", "params", "objmin", "n_iter", "seed"):

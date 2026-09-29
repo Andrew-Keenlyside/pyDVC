@@ -5,13 +5,19 @@ plus data preparation, comparison, the CCPi drop-in, and ``solve``: the
 whole-volume, single-process numpy reference used until the tiled pipeline
 lands (M3). Every stage is
 re-runnable, and ``run`` skips tiles that are already written.
+
+Exit codes: 0 success; 2 a usage or input error (one line on stderr, the
+traceback with ``--traceback``); 3 ``run`` left tiles unwritten (resubmit).
 """
 
 from __future__ import annotations
 
 import argparse
+import sys
 from collections.abc import Sequence
 
+EXIT_ERROR = 2
+EXIT_TILES_MISSING = 3
 
 
 def _cfg(args: argparse.Namespace):
@@ -37,6 +43,7 @@ def cmd_synth(args: argparse.Namespace) -> None:
         subvolume=SubvolumeSpec(geometry=args.geometry, size=args.subvol_size, n_samples=args.subvol_npts),
         search=SearchSpec(dof=args.dof, objective=args.objective, interpolation="tricubic", disp_max=args.disp_max),
         seed=args.seed,
+        overwrite=args.overwrite,
     )
     print(config)
 
@@ -47,6 +54,7 @@ def cmd_convert(args: argparse.Namespace) -> None:
     convert_to_ome_zarr(
         args.src, args.dst, chunk=args.chunk, shard=args.shard,
         shape_xyz=tuple(args.shape_xyz) if args.shape_xyz else None, dtype=args.dtype, header_bytes=args.header,
+        overwrite=args.overwrite,
     )
 
 
@@ -62,17 +70,24 @@ def cmd_seed(args: argparse.Namespace) -> None:
     print(coordinator.seed(_cfg(args), backend=args.backend))
 
 
-def cmd_run(args: argparse.Namespace) -> None:
+def cmd_run(args: argparse.Namespace) -> int:
     from zvdvc.pipeline import coordinator
 
+    cfg = _cfg(args)
     devices = tuple(args.devices) if args.devices else None
-    for st in coordinator.run(_cfg(args), backend=args.backend, devices=devices, cpu_workers=args.cpu_workers,
-                              max_tiles=getattr(args, "max_tiles", None)):
+    stats = coordinator.run(cfg, backend=args.backend, devices=devices, cpu_workers=args.cpu_workers,
+                            max_tiles=getattr(args, "max_tiles", None))
+    for st in stats:
         busy = st.seconds_compute + st.seconds_io_wait
         wait = f"{100 * st.seconds_io_wait / busy:.1f} %" if busy else "n/a"
-        print(f"device {st.device}: {st.tiles} tiles solved, {st.tiles_skipped} already written, {st.points} points, "
-              f"{st.bytes_read / 1e9:.2f} GB read, compute {st.seconds_compute:.1f} s, I/O wait {wait}, "
-              f"status counts {st.status_counts}, {len(st.errors)} errors")
+        print(f"device {st.device}: {st.tiles} tiles solved, {st.tiles_written} written, {st.tiles_skipped} already "
+              f"written, {st.points} points, {st.bytes_read / 1e9:.2f} GB read, compute {st.seconds_compute:.1f} s, "
+              f"I/O wait {wait}, status counts {st.status_counts}, {len(st.errors)} errors")
+    if stats.missing:
+        print(f"zvdvc run: error: {len(stats.missing)} tiles are not written (see failed_tiles.json in {cfg.workdir}); "
+              "run `zvdvc run` again", file=sys.stderr)
+        return EXIT_TILES_MISSING
+    return 0
 
 
 def cmd_repair(args: argparse.Namespace) -> None:
@@ -84,7 +99,7 @@ def cmd_repair(args: argparse.Namespace) -> None:
 def cmd_finalize(args: argparse.Namespace) -> None:
     from zvdvc.pipeline import coordinator
 
-    print(coordinator.finalize(_cfg(args), export_disp=args.disp, pyramid=args.pyramid))
+    print(coordinator.finalize(_cfg(args), export_disp=args.disp, pyramid=args.pyramid, allow_partial=args.allow_partial))
 
 
 def cmd_solve(args: argparse.Namespace) -> None:
@@ -103,8 +118,8 @@ def cmd_solve(args: argparse.Namespace) -> None:
     write_stat(base.with_suffix(".stat"), cfg, RunSummary(len(res.point_id), res.seconds, res.status_counts()))
     if args.disp:
         res.write_disp(base.with_suffix(".disp"))
-    rate = len(res.point_id) / res.seconds
-    print(f"{out}: {len(res.point_id)} points in {res.seconds:.1f} s ({rate:.1f} pt/s), status counts {res.status_counts()}")
+    rate = f"{len(res.point_id) / res.seconds:.1f}" if res.seconds > 0 else "n/a"
+    print(f"{out}: {len(res.point_id)} points in {res.seconds:.1f} s ({rate} pt/s), status counts {res.status_counts()}")
 
 
 def cmd_compare(args: argparse.Namespace) -> None:
@@ -147,6 +162,7 @@ def cmd_ccpi(args: argparse.Namespace) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="zvdvc", description="GPU-based Digital Volume Correlation")
+    p.add_argument("--traceback", action="store_true", help="show the full traceback of an error")
     sub = p.add_subparsers(dest="command", required=True)
 
     s = sub.add_parser("synth", help="write a synthetic case with a known displacement field")
@@ -165,6 +181,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--objective", choices=["sad", "ssd", "zssd", "nssd", "znssd"], default="znssd")
     s.add_argument("--disp-max", type=float, default=8.0)
     s.add_argument("--out", required=True)
+    s.add_argument("--overwrite", action="store_true", help="replace a case already in --out")
     s.set_defaults(func=cmd_synth)
 
     s = sub.add_parser("solve", help="in-memory single-process solve (numpy reference; whole volumes in memory)")
@@ -183,13 +200,14 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--shape-xyz", type=int, nargs=3, metavar=("X", "Y", "Z"), help=".raw only: volume size")
     s.add_argument("--dtype", help=".raw only: numpy dtype, e.g. '<u2' or 'u1'")
     s.add_argument("--header", type=int, default=0, help=".raw only: header bytes to skip")
+    s.add_argument("--overwrite", action="store_true", help="replace DST if it exists")
     s.set_defaults(func=cmd_convert)
 
     for name, func, help_ in [
         ("plan", cmd_plan, "tiles, bricks, memory check, result store allocation"),
         ("seed", cmd_seed, "seed field (coarse pass) or wavefront solve"),
         ("run", cmd_run, "solve this node's tiles, one process per GPU"),
-        ("repair", cmd_repair, "re-seed and re-solve failed points"),
+        ("repair", cmd_repair, "re-seed and re-solve failed points (not implemented yet: M5)"),
     ]:
         s = sub.add_parser(name, help=help_)
         s.add_argument("config")
@@ -207,6 +225,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("config")
     s.add_argument("--disp", action="store_true", help="also export CCPi .disp")
     s.add_argument("--pyramid", action="store_true", help="build a zarr-vectors pyramid for viewers")
+    s.add_argument("--allow-partial", action="store_true",
+                   help="finalize although cells are unwritten; their points are exported as NOT_SEARCHED")
     s.set_defaults(func=cmd_finalize)
 
     s = sub.add_parser("compare", help="accuracy against ground truth or a CCPi .disp")
@@ -247,10 +267,28 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
-def main(argv: Sequence[str] | None = None) -> None:
+def _user_errors() -> tuple[type[BaseException], ...]:
+    errors: tuple[type[BaseException], ...] = (ValueError, KeyError, FileNotFoundError, PermissionError, MemoryError,
+                                               NotImplementedError)
+    try:
+        from zarr_vectors.exceptions import StoreError
+    except ImportError:
+        return errors
+    return (*errors, StoreError)
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """Run one subcommand; returns the exit code (see the module docstring)."""
     args = build_parser().parse_args(argv)
-    args.func(args)
+    try:
+        return int(args.func(args) or 0)
+    except _user_errors() as exc:
+        if args.traceback:
+            raise
+        message = str(exc) if not isinstance(exc, KeyError) else f"missing key {exc}"
+        print(f"zvdvc {args.command}: error: {message or type(exc).__name__}", file=sys.stderr)
+        return EXIT_ERROR
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

@@ -114,9 +114,27 @@ def read_roi(path: str | Path) -> tuple[np.ndarray, np.ndarray]:
             continue                                  # header line
         if len(values) < 4:
             raise ValueError(f"{path}:{lineno}: expected 'n x y z', got {line!r}")
+        if not np.isfinite(values).all():
+            raise ValueError(f"{path}:{lineno}: point {fields[0]} has a non-finite coordinate: {line!r}")
         ids.append(int(values[0]))
         rows.append((values[1], values[2], values[3]))
-    return np.asarray(ids, dtype=np.int64), np.asarray(rows, dtype=np.float64).reshape(-1, 3)
+    point_id, xyz = np.asarray(ids, dtype=np.int64), np.asarray(rows, dtype=np.float64).reshape(-1, 3)
+    check_points(point_id, xyz, where=str(path))
+    return point_id, xyz
+
+
+def check_points(point_id: np.ndarray, xyz: np.ndarray, *, where: str) -> None:
+    """Refuse an empty cloud, repeated point ids (results are matched by id) and non-finite coordinates."""
+    if len(point_id) == 0:
+        raise ValueError(f"{where}: no points")
+    bad = ~np.isfinite(xyz).all(axis=1)
+    if bad.any():
+        raise ValueError(f"{where}: {int(bad.sum())} points have non-finite coordinates, e.g. point {int(point_id[bad][0])}")
+    ids = np.sort(point_id)
+    dup = np.unique(ids[1:][ids[1:] == ids[:-1]])
+    if len(dup):
+        shown = ", ".join(str(int(v)) for v in dup[:5]) + (", ..." if len(dup) > 5 else "")
+        raise ValueError(f"{where}: {len(dup)} point ids occur more than once ({shown}); point ids must be unique")
 
 
 def default_bin_shape(chunk_shape: tuple[float, float, float]) -> tuple[float, float, float]:
@@ -145,6 +163,7 @@ def write_pointcloud_store(
     point_id = np.asarray(point_id, dtype=np.int64).reshape(-1)
     if len(xyz) != len(point_id):
         raise ValueError("xyz and point_id differ in length")
+    check_points(point_id, xyz, where=str(path))
     if (xyz < np.asarray(bounds[0])).any() or (xyz > np.asarray(bounds[1])).any():
         raise ValueError("points lie outside the store bounds")
     bin_shape = bin_shape or default_bin_shape(chunk_shape)

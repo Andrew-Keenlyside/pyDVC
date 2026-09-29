@@ -50,4 +50,4 @@ def test_results_round_trip_and_disp_export(tmp_path):
     np.testing.assert_array_equal(back.params, res.params)
     res.write_disp(tmp_path / "r.disp")
     d = read_disp(tmp_path / "r.disp")
-    assert d["u"].tolist() == [0.0, 6.0] and d["status"].tolist() == [0, -1]
+    assert d["u"].tolist() == [0.0, 0.0] and d["status"].tolist() == [0, -1] and d["objmin"].tolist() == [0.1, 0.0]   # failed points: zero u, finite objmin

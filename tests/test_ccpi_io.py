@@ -26,7 +26,39 @@ def test_disp_round_trip(tmp_path):
 
     np.testing.assert_array_equal(back["n"], point_id)
     np.testing.assert_array_equal(back["status"], status)
-    np.testing.assert_allclose(np.stack([back["u"], back["v"], back["w"]], axis=-1), disp, atol=1e-5)
+    good = status == 0
+    uvw = np.stack([back["u"], back["v"], back["w"]], axis=-1)
+    np.testing.assert_allclose(uvw[good], disp[good], atol=1e-5)
+    assert (uvw[~good] == 0).all()                  # failed points: zero displacement, as CCPi writes them
+
+
+def test_every_disp_writer_zeroes_failed_points_and_non_finite_objmin(tmp_path):
+    from zvdvc import ccpi_dropin
+
+    status = [PointStatus.GOOD, PointStatus.RANGE_FAIL, PointStatus.SINGULAR, PointStatus.CONVG_FAIL]
+    objmin = [0.01, np.nan, np.inf, 0.5]
+    disp = np.array([[1.5, -2.0, 0.25], [9.0, 9.0, 9.0], [np.nan, np.nan, np.nan], [3.0, 3.0, 3.0]])
+    ccpi.write_disp(tmp_path / "a.disp", [1, 2, 3, 4], np.ones((4, 3)), status, objmin, disp)
+    ccpi_dropin.write_disp(tmp_path / "b.disp", [1, 2, 3, 4], np.ones((4, 3)), status, objmin, disp)
+    for name in ("a.disp", "b.disp"):
+        back = ccpi.read_disp(tmp_path / name)
+        assert back["status"].tolist() == [0, -1, -3, -2]
+        assert back["objmin"].tolist() == [0.01, 0.0, 0.0, 0.5]
+        assert np.stack([back["u"], back["v"], back["w"]], axis=-1).tolist() == [[1.5, -2.0, 0.25]] + [[0.0] * 3] * 3
+        assert "nan" not in (tmp_path / name).read_text()
+
+
+def test_stat_counts_ccpi_codes_as_the_disp_maps_them(tmp_path):
+    from zvdvc.config import RunConfig, VolumeSpec
+
+    cfg = RunConfig(volumes=VolumeSpec(reference="a", deformed="b"), points="p", output="o")
+    counts = {0: 90, -1: 4, -2: 1, -3: 2, int(PointStatus.THRESH_FAIL): 2, int(PointStatus.SINGULAR): 1}
+    ccpi.write_stat(tmp_path / "run.stat", cfg, ccpi.RunSummary(n_points=100, seconds=4.0, counts=counts))
+    text = (tmp_path / "run.stat").read_text()
+    assert "status SINGULAR\t1" in text and "status THRESH_FAIL\t2" in text
+    assert "number successful = 90\t(90.000%)" in text and "number range fail = 4\t(4.000%)" in text
+    assert "number convg fail = 1\t" in text and "number not searched = 5\t(5.000%)" in text
+    assert ccpi.read_stat_throughput(tmp_path / "run.stat") == pytest.approx(25.0)
 
 
 def test_reads_legacy_disp_with_rotation_columns(tmp_path):
@@ -144,3 +176,107 @@ def test_missing_required_key_is_reported(tmp_path):
 
     with pytest.raises(ValueError, match="missing required keys"):
         RunConfig.from_ccpi(tmp_path / "dvc_in.txt")
+
+
+GOOD_DVC_IN = {
+    "reference_filename": "ref.raw", "correlate_filename": "def.raw", "point_cloud_filename": "points.roi",
+    "output_filename": "out", "vol_bit_depth": "16", "vol_endian": "little", "vol_hdr_lngth": "0", "vol_wide": "64",
+    "vol_high": "64", "vol_tall": "64", "subvol_geom": "sphere", "subvol_size": "16", "subvol_npts": "500",
+    "subvol_thresh": "off", "disp_max": "6", "num_srch_dof": "6", "obj_function": "znssd", "interp_type": "tricubic",
+    "rigid_trans": "0 0 0", "basin_radius": "0", "subvol_aspect": "1 1 1", "num_points_to_process": "27",
+    "starting_point": "15.5 15.5 15.5",
+}
+
+
+def _dvc_in(tmp_path, **edits):
+    params = {**GOOD_DVC_IN, **edits}
+    text = "".join(f"{k}\t{v}\t###\n" for k, v in params.items() if v is not None)
+    (tmp_path / "dvc_in").write_text("# a comment line\n" + text)
+    return tmp_path / "dvc_in"
+
+
+@pytest.mark.parametrize("key, value, match", [
+    ("num_srch_dof", "5", r"num_srch_dof: 5 is not one of \[3, 6, 12\]"),
+    ("subvol_geom", "Sphere", r"subvol_geom: 'Sphere' is not one of"),
+    ("subvol_geom", "cylinder", r"subvol_geom: 'cylinder'"),
+    ("obj_function", "foo", r"obj_function: 'foo'"),
+    ("interp_type", "spline", r"interp_type: 'spline'"),
+    ("subvol_size", "-16", r"subvol_size: -16.0 is out of range"),
+    ("subvol_npts", "0", r"subvol_npts: 0 is out of range"),
+    ("subvol_npts", "2000000", r"subvol_npts: 2000000 is out of range; it must be between 1 and 1,000,000"),
+    ("subvol_npts", "500.5", r"subvol_npts: expected an integer"),
+    ("disp_max", "0", r"disp_max: 0.0 is out of range"),
+    ("disp_max", "abc", r"disp_max: expected a number, got 'abc'"),
+    ("disp_max", "nan", r"disp_max: nan is out of range"),
+    ("num_points_to_process", "-3", r"num_points_to_process: -3 is out of range"),
+    ("vol_bit_depth", "12", r"vol_bit_depth: must be 8 or 16"),
+    ("vol_endian", "BIG_ENDIAN", r"vol_endian: expected little or big, got 'BIG_ENDIAN'"),
+    ("vol_wide", "0", r"vol_wide/vol_high/vol_tall: \(0, 64, 64\) is out of range"),
+    ("rigid_trans", "1 2", r"rigid_trans: expected 3 numbers"),
+    ("subvol_aspect", "1 1 0", r"subvol_aspect: \(1.0, 1.0, 0.0\) is out of range"),
+    ("subvol_thresh", "on", r"missing required keys \['gray_thresh_min', 'gray_thresh_max'\]"),
+    ("subvol_thresh", "maybe", r"subvol_thresh: expected on or off"),
+])
+def test_dvc_input_is_validated_and_errors_name_the_key(tmp_path, key, value, match):
+    from zvdvc.config import RunConfig
+
+    with pytest.raises(ValueError, match=match):
+        RunConfig.from_ccpi(_dvc_in(tmp_path, **{key: value}))
+
+
+def test_dvc_input_threshold_range_is_validated(tmp_path):
+    from zvdvc.config import RunConfig
+
+    path = _dvc_in(tmp_path, subvol_thresh="on", gray_thresh_min="200", gray_thresh_max="10")
+    with pytest.raises(ValueError, match=r"gray_thresh_max: 10.0 is out of range; it must be finite and >= gray_min"):
+        RunConfig.from_ccpi(path)
+
+
+def test_dvc_input_accepts_integral_floats_and_ccpi_endian_spellings(tmp_path):
+    from zvdvc.config import RunConfig
+
+    cfg = RunConfig.from_ccpi(_dvc_in(tmp_path, subvol_npts="500.0", vol_wide="64.0", num_srch_dof="12.0",
+                                      num_points_to_process="0.0", vol_endian="big"))
+    assert cfg.subvolume.n_samples == 500 and cfg.volumes.raw_shape_xyz == (64, 64, 64) and cfg.search.dof == 12
+    assert isinstance(cfg.subvolume.n_samples, int) and isinstance(cfg.search.dof, int)
+    assert cfg.volumes.raw_dtype == ">u2" and cfg.num_points_to_process is None
+    assert RunConfig.from_ccpi(_dvc_in(tmp_path, vol_endian="little")).volumes.raw_dtype == "<u2"
+    # CCPi ignores vol_endian for 8-bit data
+    assert RunConfig.from_ccpi(_dvc_in(tmp_path, vol_bit_depth="8", vol_endian="whatever")).volumes.raw_dtype == "|u1"
+
+
+def test_dvc_input_comments_keep_hash_inside_paths(tmp_path):
+    (tmp_path / "dvc_in").write_text(
+        "### header\n# comment\nreference_filename\t/data/scan#3/ref.raw\t### ref\n"
+        "correlate_filename\t/data/scan#3/def.raw # trailing comment\noutput_filename\tout###tight\n")
+    params = ccpi.read_dvc_input(tmp_path / "dvc_in")
+    assert params == {"reference_filename": "/data/scan#3/ref.raw", "correlate_filename": "/data/scan#3/def.raw",
+                      "output_filename": "out"}
+
+
+def test_dvc_input_warns_on_unknown_keys(tmp_path):
+    path = _dvc_in(tmp_path, subvol_aspct="1 1 2")
+    with pytest.warns(UserWarning, match=r"unknown keys \['subvol_aspct'\]"):
+        ccpi.read_dvc_input(path)
+
+
+def test_write_dvc_input_ends_every_value_with_a_comment(tmp_path):
+    """CCPi reads a value up to the next tab, keeping the line ending, so each value line needs a trailing token."""
+    from zvdvc.config import RunConfig
+
+    np.save(tmp_path / "ref.npy", np.zeros((4, 5, 6), dtype=np.uint8))
+    ccpi.write_roi(tmp_path / "p.roi", np.array([1]), np.array([[2.0, 2.0, 1.5]]))
+    cfg = RunConfig.from_dict({"volumes": {"reference": str(tmp_path / "ref.npy"), "deformed": str(tmp_path / "ref.npy")},
+                               "points": str(tmp_path / "p.roi"), "output": "o"})
+    ccpi.write_dvc_input(cfg, tmp_path / "dvc_in", roi_path=tmp_path / "p.roi", output_base=tmp_path / "out")
+    for line in (tmp_path / "dvc_in").read_text().splitlines():
+        assert line.startswith("#") or line.split("\t")[2].startswith("###"), line
+
+
+def test_ccpi_layout_keeps_the_files_byte_order(tmp_path):
+    from zvdvc.config import RunConfig
+
+    np.arange(4 * 5 * 6, dtype=">u2").tofile(tmp_path / "v.raw")
+    cfg = RunConfig.from_dict({"volumes": {"reference": str(tmp_path / "v.raw"), "deformed": str(tmp_path / "v.raw"),
+                                           "raw_shape_xyz": [6, 5, 4], "raw_dtype": ">u2"}, "points": "p", "output": "o"})
+    assert ccpi.ccpi_volume_layout(cfg)[1] == np.dtype(">u2")

@@ -130,3 +130,112 @@ def test_basin_search_recovers_a_displacement_far_from_the_seed():
     assert not np.allclose(far.displacement, u, atol=0.05)
     assert (res.status == PointStatus.GOOD).all()
     np.testing.assert_allclose(res.displacement, np.broadcast_to(u, (2, 3)), atol=0.02)
+
+
+ENGINES = [
+    "numpy",
+    "numpy32",
+    "emulated",
+    "cpu",
+    pytest.param("cupy", marks=pytest.mark.gpu),
+    pytest.param("fused", marks=pytest.mark.gpu),
+]
+
+
+def _engine_or_skip(backend):
+    from zvdvc.solver.engines import make_engine
+
+    if backend == "emulated":
+        from zvdvc.kernels.cuda.emulate import compiler
+
+        if compiler() is None:
+            pytest.skip("no C++20 compiler for the CUDA emulator")
+    if backend == "cpu":
+        pytest.importorskip("numba")
+    return make_engine(backend)
+
+
+def _host(a):
+    return a.get() if hasattr(a, "get") else np.asarray(a)
+
+
+def _solve_on(backend, ref, deformed, search, seeds=None):
+    eng = _engine_or_skip(backend)
+    n = 60 if backend == "emulated" else 400
+    template = make_template(SubvolumeSpec(geometry="sphere", size=12, n_samples=n))
+    seeds = np.zeros((2, 3)) if seeds is None else seeds
+    res = solve_batch(whole_brick(ref), whole_brick(deformed), CENTRES, seeds, template, search, engine=eng)
+    return {k: _host(getattr(res, k)) for k in ("params", "status", "objmin", "n_iter")}
+
+
+@pytest.mark.parametrize("backend", ENGINES)
+@pytest.mark.parametrize("report_convg_fail", [True, False])
+@pytest.mark.parametrize("kind", ["sad", "ssd", "zssd", "nssd", "znssd"])
+@pytest.mark.parametrize("level", [0.0, 3000.0])
+def test_constant_reference_is_singular_on_every_engine(backend, report_convg_fail, kind, level):
+    """Air or zero padding in the reference: nothing to correlate, whatever the target holds (P0-6)."""
+    ref = np.full(SHAPE, level, dtype=np.float32)
+    deformed = wave_field(SHAPE, shift_xyz=(0.6, -0.3, 0.2)).astype(np.float32) * 30.0
+    search = SearchSpec(dof=6, objective=kind, disp_max=6.0, report_convg_fail=report_convg_fail)
+    for seeds in (np.zeros((2, 3)), np.full((2, 3), 2.0)):
+        res = _solve_on(backend, ref, deformed, search, seeds)
+        assert (res["status"] == PointStatus.SINGULAR).all()
+        assert (res["n_iter"] == 0).all()
+
+
+@pytest.mark.parametrize("backend", ENGINES)
+@pytest.mark.parametrize("report_convg_fail", [True, False])
+@pytest.mark.parametrize("kind", ["ssd", "znssd"])
+def test_constant_target_is_not_good_on_every_engine(backend, report_convg_fail, kind):
+    ref = wave_field(SHAPE).astype(np.float32)
+    deformed = np.full(SHAPE, 100.0, dtype=np.float32)
+    search = SearchSpec(dof=6, objective=kind, disp_max=6.0, report_convg_fail=report_convg_fail)
+    assert (_solve_on(backend, ref, deformed, search)["status"] == PointStatus.SINGULAR).all()
+    no_steps = SearchSpec(dof=6, objective=kind, max_iterations=0, report_convg_fail=report_convg_fail)
+    assert (_solve_on(backend, ref, deformed, no_steps)["status"] == PointStatus.SINGULAR).all()
+
+
+@pytest.mark.parametrize("backend", ENGINES)
+@pytest.mark.parametrize("report_convg_fail", [True, False])
+def test_textured_subvolume_is_still_solved_on_every_engine(backend, report_convg_fail):
+    u = (0.6, -0.3, 0.2)
+    ref = wave_field(SHAPE).astype(np.float32)
+    deformed = wave_field(SHAPE, shift_xyz=u).astype(np.float32)
+    search = SearchSpec(dof=6, objective="znssd", disp_max=3.0, report_convg_fail=report_convg_fail)
+    res = _solve_on(backend, ref, deformed, search)
+    assert (res["status"] == PointStatus.GOOD).all()
+    np.testing.assert_allclose(res["params"][:, :3], np.broadcast_to(u, (2, 3)), atol=0.05)
+
+
+@pytest.mark.parametrize("report_convg_fail", [True, False])
+def test_non_finite_solution_is_never_good(report_convg_fail):
+    """Whatever an engine's update leaves behind, NaN parameters are not reported GOOD."""
+    from zvdvc.solver.engines import make_engine
+
+    class NaNStep:
+        def __init__(self, inner):
+            self.inner = inner
+
+        def __getattr__(self, name):
+            return getattr(self.inner, name)
+
+        def update(self, st, idx, sums, outside, shift, search):
+            st.params[idx] = np.nan
+            return np.ones(len(idx), dtype=bool)
+
+    template = make_template(SubvolumeSpec(geometry="sphere", size=12, n_samples=300))
+    search = SearchSpec(dof=3, report_convg_fail=report_convg_fail)
+    res = solve_batch(whole_brick(wave_field(SHAPE)), whole_brick(wave_field(SHAPE, shift_xyz=(0.6, 0.0, 0.0))),
+                      CENTRES, np.zeros((2, 3)), template, search, engine=NaNStep(make_engine("numpy")))
+    assert (res.status == PointStatus.SINGULAR).all()
+
+
+@pytest.mark.parametrize("backend", ["numpy", "numpy32"])
+@pytest.mark.parametrize("report_convg_fail", [True, False])
+def test_non_finite_volumes_are_never_good(backend, report_convg_fail):
+    for bad in (np.nan, np.inf):
+        for which in ("ref", "deformed"):
+            vols = {"ref": wave_field(SHAPE), "deformed": wave_field(SHAPE, shift_xyz=(0.6, 0.0, 0.0))}
+            vols[which][26:38, 26:38, 26:38] = bad
+            res = _solve_on(backend, vols["ref"], vols["deformed"], SearchSpec(dof=6, report_convg_fail=report_convg_fail))
+            assert (res["status"] != PointStatus.GOOD).all()

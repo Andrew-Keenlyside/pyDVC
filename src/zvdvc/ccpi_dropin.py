@@ -34,6 +34,8 @@ from typing import Any, TextIO
 
 import numpy as np
 
+from zvdvc.io import ccpi
+from zvdvc.io.ccpi import DISP_HEADER, disp_row, g  # noqa: F401  (CCPi's number and row formats)
 from zvdvc.status import PointStatus
 
 CCPI_VERSION = "v22.0.0"
@@ -41,35 +43,12 @@ _WORDS = {int(PointStatus.GOOD): "Point_Good", int(PointStatus.RANGE_FAIL): "Ran
           int(PointStatus.CONVG_FAIL): "Convg_Fail"}
 
 
-def g(v: Any) -> str:
-    """A number as C++ ``operator<<`` prints it by default (6 significant digits, like ``%g``)."""
-    v = float(v)
-    if v != v:
-        return "nan"
-    s = f"{v:g}"
-    return "0" if s == "-0" else s
-
-
 # --------------------------------------------------------------------------- .disp
 
 
-DISP_HEADER = "n\tx\ty\tz\tstatus\tobjmin\tu\tv\tw\n"
-
-
-def disp_row(n: int, xyz: Any, status: int, objmin: float, uvw: Any) -> str:
-    """One ``append_result`` line: default-format coordinates and objective, 6-decimal displacements."""
-    x, y, z = xyz
-    u, v, w = uvw
-    return f"{int(n)}\t{g(x)}\t{g(y)}\t{g(z)}\t{int(status)}\t{g(objmin)}\t{u:.6f}\t{v:.6f}\t{w:.6f}\n"
-
-
 def write_disp(path: str | Path, point_id: Any, xyz: Any, status: Any, objmin: Any, disp: Any) -> None:
-    """CCPi's ``.disp``: failed points get zero displacement, as CCPi writes them (``blank_par_min``)."""
-    with open(path, "w") as fh:
-        fh.write(DISP_HEADER)
-        for n, p, st, obj, u in zip(point_id, xyz, status, objmin, disp):
-            code = PointStatus(int(st)).to_ccpi()
-            fh.write(disp_row(n, p, code, obj if np.isfinite(obj) else 0.0, u if code == 0 else (0.0, 0.0, 0.0)))
+    """CCPi's ``.disp`` as CCPi prints it; failed points get zero displacement (``blank_par_min``), as every writer does."""
+    ccpi.write_disp(path, point_id, xyz, status, objmin, disp, ccpi_precision=True)
 
 
 # --------------------------------------------------------------------------- .stat
@@ -146,38 +125,131 @@ def progress_line(i: int, total: int, label: int, xyz: Any, status: int, objmin:
 # --------------------------------------------------------------------------- run
 
 
-def run(dvc_in: str | Path, *, backend: str | None = None, out: TextIO = sys.stdout) -> int:
-    """Run ``dvc_in`` as CCPi would, with zvDVC; 0 on success."""
+def _one_line(exc: BaseException) -> str:
+    return f"{type(exc).__name__}: {' '.join(str(exc).split())}"
+
+
+def _check_backend(backend: str, source: str) -> None:
+    """``backend`` is a known engine that can run here (``source`` names where the name came from)."""
+    import typing
+
+    from zvdvc.solver.engines import gpu_available
+    from zvdvc.solver.gauss_newton import Backend
+
+    names = typing.get_args(Backend)
+    if backend not in names:
+        raise ValueError(f"{source}: unknown backend {backend!r}; use one of {list(names)}")
+    if backend in ("cupy", "fused") and not gpu_available():
+        raise ValueError(f"{source}: backend {backend!r} needs cupy and a CUDA device; none is available")
+    if backend == "cpu":
+        try:
+            import numba  # noqa: F401
+        except ImportError:
+            raise ValueError(f"{source}: backend 'cpu' needs numba, which is not installed") from None
+
+
+def _check_points(where: str, point_id: np.ndarray, xyz: np.ndarray) -> None:
+    """A usable point cloud: not empty, finite coordinates, unique labels."""
+    if len(xyz) == 0:
+        raise ValueError(f"{where}: the point cloud has no points")
+    bad = ~np.isfinite(xyz).all(axis=1)
+    if bad.any():
+        raise ValueError(f"{where}: {int(bad.sum())} points have non-finite coordinates (first: point {int(point_id[bad][0])})")
+    ids, counts = np.unique(point_id, return_counts=True)
+    if (counts > 1).any():
+        dup = ids[counts > 1]
+        raise ValueError(f"{where}: point labels must be unique; {len(dup)} repeat (first: {int(dup[0])})")
+
+
+def _prepare(path: Path, backend: str | None) -> dict[str, Any]:
+    """Read and check every input before any output is touched; raises on the first problem."""
+    from zvdvc.geometry.templates import make_template
     from zvdvc.io.ccpi import read_dvc_input, run_config_from_dvc_input
     from zvdvc.io.pointcloud import read_roi
-    from zvdvc.pipeline.inmemory import solve_in_memory
+    from zvdvc.io.volume import open_volume
     from zvdvc.solver import seeding
     from zvdvc.solver.engines import default_backend
 
-    path = Path(dvc_in)
-    if not path.is_file():
-        print(f"\n-> Can't open {dvc_in}\n", file=out)
-        return 1
-    try:
-        params = read_dvc_input(path)
-        cfg = run_config_from_dvc_input(params, base_dir=Path.cwd())       # CCPi: relative to the working dir
-        point_id, xyz = read_roi(cfg.points)
-    except Exception as exc:                                                 # CCPi prints the problem and stops
-        print(f"\ninput file problem: {type(exc).__name__}: {exc}\n", file=out)
-        return 1
-    backend = backend or os.environ.get("ZVDVC_BACKEND") or default_backend()
-    base = Path(params["output_filename"])
-    base = base if base.is_absolute() else Path.cwd() / base
-    disp_path, stat_path = base.with_name(base.name + ".disp"), base.with_name(base.name + ".stat")
+    params = read_dvc_input(path)
+    cfg = run_config_from_dvc_input(params, base_dir=Path.cwd())           # CCPi: relative to the working dir
+    if backend is None:
+        backend, source = os.environ.get("ZVDVC_BACKEND"), "ZVDVC_BACKEND"
+        if not backend:
+            backend, source = default_backend(), "default backend"
+    else:
+        source = "backend"
+    _check_backend(backend, source)
+    point_id, xyz = read_roi(cfg.points)
+    _check_points(params["point_cloud_filename"], point_id, xyz)
+    ref, deformed = open_volume(cfg.volumes, "reference"), open_volume(cfg.volumes, "deformed")
+    if ref.shape != deformed.shape:
+        raise ValueError(f"reference {ref.shape} and correlate {deformed.shape} volumes differ in shape (z, y, x)")
+    make_template(cfg.subvolume)
     start = cfg.seeding.start_point or tuple(xyz[0])
     order = seeding.processing_order(np.asarray(xyz, dtype=np.float64), start)
     if cfg.num_points_to_process and cfg.num_points_to_process < len(order):
         order = order[: cfg.num_points_to_process]
+    echo = stat_echo(params, len(xyz), np.min(xyz, axis=0), np.max(xyz, axis=0))
+    base = Path(params["output_filename"])
+    base = base if base.is_absolute() else Path.cwd() / base
+    if not base.parent.is_dir():
+        raise FileNotFoundError(f"output_filename: folder {base.parent} does not exist")
+    final = {k: base.with_name(f"{base.name}.{k}") for k in ("disp", "stat")}
+    tmp = {k: base.with_name(f".{base.name}.{k}.{os.getpid()}.tmp") for k in ("disp", "stat")}
+    for p in tmp.values():                           # the output folder must be writable (CCPi checks the same)
+        try:
+            p.write_text("")
+        except OSError as exc:
+            raise OSError(f"output_filename: cannot write in {base.parent} ({exc.strerror})") from None
+    return dict(params=params, cfg=cfg, backend=backend, point_id=point_id, xyz=xyz, order=order, echo=echo,
+                final=final, tmp=tmp)
+
+
+def run(dvc_in: str | Path, *, backend: str | None = None, out: TextIO = sys.stdout) -> int:
+    """Run ``dvc_in`` as CCPi would, with zvDVC; 0 on success.
+
+    Every input is read and checked first. The ``.disp`` and ``.stat`` are written
+    to temporary files and renamed into place only when the run succeeds (the
+    ``.disp`` last), so a failed run leaves earlier outputs as they were and never
+    a new ``.disp``, the only failure signal iDVC sees (:mod:`zvdvc.io.ccpi`). A
+    failure prints one ``input file problem: ...`` or ``run failed: ...`` line
+    and returns 1.
+    """
+    path = Path(dvc_in)
+    if not path.is_file():
+        print(f"\n-> Can't open {dvc_in}\n", file=out)
+        return 1
+    import warnings
+
+    job: dict[str, Any] | None = None
+    show = warnings.showwarning
+    warnings.showwarning = lambda message, category, *a, **k: print(f"warning: {message}", file=sys.stderr)
+    try:
+        try:
+            job = _prepare(path, backend)
+        except Exception as exc:                                             # CCPi prints the problem and stops
+            print(f"\ninput file problem: {_one_line(exc)}\n", file=out)
+            return 1
+        try:
+            return _run(job, out)
+        except Exception as exc:
+            print(f"\nrun failed: {_one_line(exc)}\n", file=out)
+            return 1
+    finally:
+        warnings.showwarning = show
+        for p in (job or {}).get("tmp", {}).values():
+            p.unlink(missing_ok=True)
+
+
+def _run(job: dict[str, Any], out: TextIO) -> int:
+    from zvdvc.pipeline.inmemory import solve_in_memory
+
+    cfg, backend, point_id, xyz, order, echo = (job[k] for k in ("cfg", "backend", "point_id", "xyz", "order", "echo"))
+    disp_path, stat_path = job["tmp"]["disp"], job["tmp"]["stat"]
     total = len(order)
     rank = np.full(len(xyz), -1)
     rank[order] = np.arange(total)
 
-    echo = stat_echo(params, len(xyz), np.min(xyz, axis=0), np.max(xyz, axis=0))
     t_start = time.time()
     stat_path.write_text(echo + f"Run start: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(t_start))}\n")
     disp_path.write_text(DISP_HEADER)
@@ -217,6 +289,8 @@ def run(dvc_in: str | Path, *, backend: str | None = None, out: TextIO = sys.std
     write_disp(disp_path, point_id[sel], np.asarray(xyz)[sel], res.status[sel], res.objmin[sel], res.params[sel, :3])
     codes = [PointStatus(int(s)).to_ccpi() for s in res.status[sel]]
     stat_path.write_text(echo + stat_summary(t_start, t_finish, total, seconds, codes))
+    os.replace(stat_path, job["final"]["stat"])
+    os.replace(disp_path, job["final"]["disp"])      # last: a .disp means the run finished
     if not done["stdout"]:                           # keep Python from reporting the closed pipe at exit
         try:
             sys.stdout = open(os.devnull, "w")

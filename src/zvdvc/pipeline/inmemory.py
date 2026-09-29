@@ -11,6 +11,7 @@ bricks instead.
 from __future__ import annotations
 
 import time
+import warnings
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -94,6 +95,26 @@ def run_in_memory(
     return solve_in_memory(cfg, point_id, xyz, backend=backend, progress=progress)
 
 
+def _cpu_fallback(backend: str, exc: MemoryError, nbytes: int) -> object:
+    """The cpu engine, after a GPU engine ran out of memory for the whole volumes; a clear error without numba."""
+    if backend == "cpu":
+        raise exc
+    try:
+        engine = make_engine("cpu")
+    except ImportError:
+        raise MemoryError(f"the {backend} engine has not enough memory for both volumes ({nbytes:,} bytes) and the cpu "
+                          f"engine needs numba; free GPU memory, install numba, or run the tiled pipeline (zvdvc run)") from exc
+    try:
+        import cupy
+
+        cupy.get_default_memory_pool().free_all_blocks()
+    except Exception:
+        pass
+    warnings.warn(f"the {backend} engine has not enough memory for both volumes ({nbytes:,} bytes): "
+                  f"{' '.join(str(exc).split())}; solving on the cpu engine instead", RuntimeWarning, stacklevel=3)
+    return engine
+
+
 def solve_in_memory(
     cfg: RunConfig,
     point_id: np.ndarray,
@@ -125,7 +146,11 @@ def solve_in_memory(
     t_read = time.perf_counter() - t0
     engine = make_engine(backend)
     # once: every wavefront shell reuses them (for a GPU engine, preparing uploads the whole volume)
-    ref, deformed = engine.prepare(ref), engine.prepare(deformed)
+    try:
+        ref, deformed = engine.prepare(ref), engine.prepare(deformed)
+    except MemoryError as exc:                       # cupy's OutOfMemoryError is a MemoryError
+        engine = _cpu_fallback(backend, exc, ref.data.nbytes + deformed.data.nbytes)
+        ref, deformed = engine.prepare(ref), engine.prepare(deformed)
 
     n, ndof = len(xyz), cfg.search.dof
     res = Results(
