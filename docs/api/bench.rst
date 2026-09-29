@@ -33,6 +33,11 @@ The benchmark and check-suite modules. Most are run as ``python -m zvdvc.bench.<
 
 .. automodule:: zvdvc.bench.error_floor
 
+``zvdvc.bench.public_datasets``
+-------------------------------
+
+.. automodule:: zvdvc.bench.public_datasets
+
 ``zvdvc.bench.metrics``
 -----------------------
 

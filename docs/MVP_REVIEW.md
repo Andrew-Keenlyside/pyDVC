@@ -144,6 +144,12 @@ rigid moves, zvDVC and CCPi side by side, pass if zvDVC's noise SD is within
 then DVC Challenge 2.0's translation and stretch series (pass if tricubic
 bias ≤ 0.02 voxel and strain error ≤ 10⁻³ up to 10 % stretch).
 
+**Update, 2026-09-29:** both run, with zvDVC and CCPi side by side
+({doc}`validation/datasets`). Every criterion passes; the strain criterion
+passes for strain fitted to the whole field, and pointwise strain was not
+assessed. The runs also found two CCPi robustness problems: segmentation faults
+near the image edge, and wrong points reported GOOD at stretches of 15 % and more.
+
 ## What is needed for Go
 
 1. The 8 × H100 campaign: Q2 (kernel at scenario-B settings, with Nsight
@@ -152,4 +158,4 @@ bias ≤ 0.02 voxel and strain error ≤ 10⁻³ up to 10 % stretch).
    the cluster.
 2. Sign-off of the revised Q1 criterion, now backed by the direct comparison.
 3. A first ground-truth validation (DVC Challenge 1.0 XCT1 and 2.0 translation
-   series).
+   series). Done 2026-09-29 ({doc}`validation/datasets`).
