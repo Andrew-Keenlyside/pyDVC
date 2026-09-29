@@ -87,15 +87,22 @@ def _previous_ccpi(workdir: Path, threads: int, procs: int) -> TimedRun | None:
 
 
 def run_ccpi_variants(
-    cfg: RunConfig, out: Path, exe: str | Path, *, processes: int, max_points: int | None, reuse: bool = False
+    cfg: RunConfig, out: Path, exe: str | Path, *, processes: int, max_points: int | None, reuse: bool = False,
+    idvc_launch: bool = True,
 ) -> list[TimedRun]:
+    """CCPi as iDVC launches it (one process, every core) and as ``processes`` one-thread processes.
+
+    ``idvc_launch=False`` skips the first: CCPi's results do not depend on its thread count
+    (bit-identical with cube subvolumes), and one thread is faster for small clouds, so a
+    campaign can run several cases side by side on one thread each.
+    """
     from zvdvc.bench.ccpi_baseline import run_ccpi
 
     cores = os.cpu_count() or 1
     label = Path(exe).resolve().parent.parent.name or "dvc"          # e.g. the conda package folder, ccpi-dvc-22.0.0-0
     runs = []
     for threads, procs, tag in ((cores, 1, "iDVC (1 process, all cores)"), (1, processes, f"{processes} processes x 1 thread")):
-        if procs > 1 and processes <= 1:
+        if (procs > 1 and processes <= 1) or (threads > 1 and not idvc_launch):
             continue
         name = f"CCPi {label}: {tag}"
         detail = {"omp_threads": threads, "processes": procs, "exe": str(exe)}
@@ -248,6 +255,7 @@ def compare(
     max_ccpi_points: int | None = None,
     title: str = "CCPi vs zvDVC",
     reuse_ccpi: bool = False,
+    idvc_launch: bool = True,
 ) -> dict[str, Any]:
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
@@ -260,7 +268,7 @@ def compare(
         cfg_ccpi = ccpi_ready_config(cfg, raw_dir)            # OME-Zarr -> raw once, shared by every CCPi run
         for exe in ccpi_exes:
             runs += run_ccpi_variants(cfg_ccpi, out, exe, processes=ccpi_processes, max_points=max_ccpi_points,
-                                      reuse=reuse_ccpi)
+                                      reuse=reuse_ccpi, idvc_launch=idvc_launch)
     for i, b in enumerate(backends):
         runs.append(run_zvdvc_parity(cfg, out, b, alt_seed=i == 0 and bool(ccpi_exes)))
         if cli:

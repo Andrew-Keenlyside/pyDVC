@@ -18,6 +18,8 @@ is skipped, with a note, when its data has not been made. The data comes from:
     :mod:`zvdvc.bench.error_floor`: bias against sub-voxel shifts, and the sample-count spread.
 ``runs/gds``
     :mod:`zvdvc.bench.gds`: brick reads on the host and kvikio paths.
+``runs/public_validation``
+    :mod:`zvdvc.bench.public_datasets`: DVC Challenge 1.0 and 2.0, CCPi and zvDVC.
 """
 
 from __future__ import annotations
@@ -343,6 +345,194 @@ def gds_figure(runs: Path, out: Path, made: list[str], skipped: list[str]) -> No
     _save(fig, out / "gds_read_paths.png", made)
 
 
+# ------------------------------------------------------------------------------------ public datasets
+
+
+PREFILTERED = SERIES[2]
+
+
+def _case_label(c: Any) -> str:
+    if c.dataset == "dvc1":
+        kind = c.name.split("_")[1]
+        return f"XCT1 {kind[:-1]} {kind[-1]}, cube {c.size:g}"
+    if c.group == "translation":
+        return f"beads, translation {c.truth_xyz[1]:.1f}"
+    return f"beads, stretch {c.name.split('_')[1]}"
+
+
+def public_figures(runs: Path, out: Path, made: list[str], skipped: list[str]) -> None:
+    """DVC Challenge 1.0 (XCT1) and 2.0 (Yang beads): both codes, from :mod:`zvdvc.bench.public_datasets`."""
+    from zvdvc.bench import public_datasets as pds
+
+    root = runs / "public_validation"
+    scores = {c.name: s for c in pds.cases() if (s := pds.score(root, c))}
+    if not scores:
+        skipped.append("public datasets: run zvdvc.bench.public_datasets first")
+        return
+    plt = _plt()
+    order = [c for c in pds.cases() if c.name in scores]
+    labels = {"zvdvc": "zvDVC", "ccpi": "iDVC's engine", "zvdvc_prefilter": f"zvDVC, prefilter σ = {pds.PREFILTER_SIGMA:g}"}
+    colors = {"zvdvc": ZVDVC, "ccpi": CCPI, "zvdvc_prefilter": PREFILTERED}
+    # iDVC thin, dashed and hollow-marked, drawn over a wider zvDVC line: where they coincide, both stay visible
+    styles = {"zvdvc": "-", "ccpi": (0, (4, 2)), "zvdvc_prefilter": "-"}
+    widths = {"zvdvc": 3.4, "ccpi": 1.6, "zvdvc_prefilter": 2.0}
+    fills = {"zvdvc": ZVDVC, "ccpi": SURFACE, "zvdvc_prefilter": PREFILTERED}
+
+    # 1. agreement of the two codes, every case
+    fig, ax = plt.subplots(figsize=(8.0, 0.22 * len(order) + 1.3))
+    y = np.arange(len(order))[::-1]
+    for yi, c in zip(y, order):
+        a = scores[c.name]["agreement"]
+        ax.plot([a["median_abs"], a["p95_abs"]], [yi, yi], color=GRID, lw=2, zorder=1)
+        ax.scatter([a["median_abs"]], [yi], s=26, color=ZVDVC, zorder=3, lw=0)
+        ax.scatter([a["p95_abs"]], [yi], s=26, facecolor=SURFACE, edgecolor=ZVDVC, lw=1.4, zorder=3)
+    ax.set_yticks(y, [_case_label(c) for c in order], fontsize=7.5, color=INK)
+    ax.set_xscale("log")
+    ax.set_axisbelow(True)
+    ax.grid(True, axis="x")
+    ax.set_xlabel("|zvDVC − iDVC's engine| per point (voxels, log scale), interior points GOOD in both")
+    ax.scatter([], [], s=26, color=ZVDVC, label="median")
+    ax.scatter([], [], s=26, facecolor=SURFACE, edgecolor=ZVDVC, lw=1.4, label="95th percentile")
+    ax.legend(fontsize=8, loc="lower left", bbox_to_anchor=(0, 1.0), ncol=2)
+    fig.suptitle("zvDVC against iDVC's engine on the public datasets, point by point", x=0.01, ha="left",
+                 fontsize=10, fontweight="bold")
+    fig.tight_layout()
+    _save(fig, out / "public_agreement.png", made)
+
+    # 2. translation series: bias and scatter against the imposed shift
+    tr = [c for c in order if c.group == "translation"]
+    if tr:
+        t = np.array([c.truth_xyz[1] for c in tr])
+        fig, axes = plt.subplots(1, 2, figsize=(10.5, 3.6))
+        for k in ("zvdvc", "ccpi", "zvdvc_prefilter"):
+            rows = [scores[c.name]["truth"].get(k) for c in tr]
+            if any(r is None for r in rows):
+                continue
+            axes[0].plot(t, [r["mean"][1] for r in rows], color=colors[k], ls=styles[k], lw=widths[k], marker="o", ms=4, mfc=fills[k],
+                         label=labels[k])
+            axes[1].plot(t, [r["sd"][1] for r in rows], color=colors[k], ls=styles[k], lw=widths[k], marker="o", ms=4, mfc=fills[k])
+        axes[0].axhline(0, color=MUTED, lw=1)
+        axes[0].set_ylabel("mean error in y (voxels)")
+        axes[0].set_title("Bias: mean of measured − imposed", fontsize=9, loc="left")
+        axes[1].set_ylabel("SD of the error in y (voxels)")
+        axes[1].set_ylim(bottom=0)
+        axes[1].set_title("Random error: SD over the points", fontsize=9, loc="left")
+        for axx in axes:
+            axx.set_xlabel("imposed translation along y (voxels)")
+            axx.grid(True)
+        axes[0].legend(fontsize=8, loc="best")
+        fig.suptitle(f"DVC Challenge 2.0, Yang_Beads_S2: uniform translations, {scores[tr[0].name]['n_good_both']:,} "
+                     "points each", x=0.01, ha="left", fontsize=10, fontweight="bold")
+        fig.tight_layout()
+        _save(fig, out / "public_translation.png", made)
+
+    # 3. DVC Challenge 1.0 repeats: noise floor against subvolume size
+    rep = [c for c in order if c.group == "repeat"]
+    if rep:
+        sizes = sorted({c.size for c in rep})
+        fig, axes = plt.subplots(1, 2, figsize=(10.5, 3.6), sharey=True)
+        for j, (key, title) in enumerate((("raw", "SD of the displacement"),
+                                          ("about_affine", "SD about each code's affine fit"))):
+            for k in ("zvdvc", "ccpi", "zvdvc_prefilter"):
+                vals = []
+                for s in sizes:
+                    per = [scores[c.name][key][k]["sd"] for c in rep if c.size == s and k in scores[c.name][key]]
+                    vals.append(float(np.mean(per)) if per else np.nan)
+                if np.all(np.isnan(vals)):
+                    continue
+                axes[j].plot(sizes, vals, color=colors[k], ls=styles[k], lw=widths[k], marker="o", ms=5, mfc=fills[k], label=labels[k])
+            axes[j].set_title(title, fontsize=9, loc="left")
+            axes[j].set_xlabel("cube subvolume size (voxels)")
+            axes[j].set_xticks(sizes)
+            axes[j].grid(True)
+            axes[j].set_ylim(bottom=0)
+        axes[0].set_ylabel("SD, mean over x, y, z and both repeats (voxels)")
+        axes[0].legend(fontsize=8)
+        fig.suptitle("DVC Challenge 1.0, XCT1: repeat scans with no motion (noise floor)", x=0.01, ha="left",
+                     fontsize=10, fontweight="bold")
+        fig.tight_layout()
+        _save(fig, out / "public_noise_floor.png", made)
+
+    # 4. a 1 mm move: the residual field about the mean, in both codes, on the central x-z plane
+    move = next((c for c in order if c.name == "dvc1_axial1_32"), None)
+    if move is not None:
+        p = pds._load_pair(root / "cases" / move.name)
+        both = p["good_zvdvc"] & p["good_ccpi"]
+        xyz = p["xyz"]
+        ys = np.unique(xyz[:, 1])
+        yc = ys[np.argmin(np.abs(ys - np.median(xyz[both, 1])))]
+        sel = both & (xyz[:, 1] == yc)
+        xs, zs = np.unique(xyz[sel, 0]), np.unique(xyz[sel, 2])
+        from matplotlib.colors import LinearSegmentedColormap, TwoSlopeNorm
+
+        from zvdvc.bench.plotstyle import DIVERGING
+
+        div = LinearSegmentedColormap.from_list("div", DIVERGING)
+        div.set_bad("#f0efec")
+        fig, axes = plt.subplots(2, 3, figsize=(10.5, 6.6), constrained_layout=True)
+        for r, (comp, k) in enumerate((("w", 2), ("u", 0))):
+            mean = p["ccpi"][both, k].mean()
+            imgs = []
+            for u in (p["ccpi"][:, k] - mean, p["zvdvc"][:, k] - mean, p["zvdvc"][:, k] - p["ccpi"][:, k]):
+                img = np.full((len(zs), len(xs)), np.nan)
+                img[np.searchsorted(zs, xyz[sel, 2]), np.searchsorted(xs, xyz[sel, 0])] = u[sel]
+                imgs.append(img)
+            lim = float(np.nanpercentile(np.abs(imgs[0]), 99))
+            ext = [xs[0] - 12, xs[-1] + 12, zs[-1] + 12, zs[0] - 12]
+            for j, (img, name) in enumerate(zip(imgs[:2], ("iDVC's engine", "zvDVC"))):
+                im = axes[r, j].imshow(img, extent=ext, cmap=div, norm=TwoSlopeNorm(0, -lim, lim), interpolation="nearest")
+                axes[r, j].set_title(f"{name}: {comp} − {mean:.2f}", fontsize=9)
+            fig.colorbar(im, ax=axes[r, :2], shrink=0.85, label="voxels")
+            dl = max(float(np.nanpercentile(np.abs(imgs[2]), 99)), 1e-6)
+            im = axes[r, 2].imshow(imgs[2], extent=ext, cmap=div, norm=TwoSlopeNorm(0, -dl, dl), interpolation="nearest")
+            axes[r, 2].set_title(f"zvDVC − iDVC: {comp} (smaller scale)", fontsize=9)
+            fig.colorbar(im, ax=axes[r, 2], shrink=0.85, label="voxels")
+        for axx in axes.ravel():
+            axx.set_xlabel("x (voxels)", fontsize=8)
+            axx.set_ylabel("z", fontsize=8)
+            axx.tick_params(labelsize=7)
+        fig.suptitle(f"DVC Challenge 1.0, XCT1: a 1 mm stage move along z (the rotation axis), plane y = {yc:g}; "
+                     "displacement about its mean", fontsize=10, x=0.01, ha="left", fontweight="bold")
+        _save(fig, out / "public_axial_move.png", made)
+
+    # 5. stretch series: how many points each code gets right, and how many it reports GOOD but gets wrong
+    st = [c for c in order if c.group == "stretch" and "own" in scores[c.name]]
+    if st:
+        strain = [100 * c.strain_y for c in st]
+        fig, axes = plt.subplots(1, 2, figsize=(10.5, 3.8), sharey=True)
+        for key, ls, suffix in (("own", None, ""), ("own_basin", (0, (1, 1.5)), f", basin_radius {pds.BASIN_RADIUS:g}")):
+            if not all(key in scores[c.name] for c in st):
+                continue
+            for k in ("zvdvc", "ccpi"):
+                n = [scores[c.name]["n_interior"] for c in st]
+                runs_ = [scores[c.name][key].get(k, {}) for c in st]
+                right = [100 * r["right"] / m if "right" in r else np.nan for r, m in zip(runs_, n)]
+                wrong = [100 * r["good_but_wrong"] / m if "right" in r else np.nan for r, m in zip(runs_, n)]
+                crashed = [x for x, r in zip(strain, runs_) if "crashed_after" in r]
+                kw = dict(color=colors[k], ls=ls or styles[k], lw=widths[k] if ls is None else 2.2, marker="o", ms=5,
+                          mfc=fills[k] if ls is None else SURFACE, label=labels[k] + suffix)
+                axes[0].plot(strain, right, **kw)
+                axes[1].plot(strain, wrong, **kw)
+                if crashed:
+                    for axx in axes:
+                        axx.scatter(crashed, [-5] * len(crashed), marker="x", s=46, color=colors[k], lw=1.8, zorder=4,
+                                    clip_on=False, label=f"{labels[k]}{suffix}: crashed, no result" if axx is axes[0]
+                                    else None)
+        axes[0].set_title(f"Right: GOOD and within {pds.WRONG_ABS:g} voxel of the truth", fontsize=9, loc="left")
+        axes[1].set_title("Reported GOOD but wrong", fontsize=9, loc="left")
+        axes[0].set_ylabel("share of interior points (%)")
+        axes[0].set_ylim(-8, 103)
+        for axx in axes:
+            axx.set_xlabel("imposed stretch along y (%)")
+            axx.set_xticks(strain)
+            axx.grid(True)
+        axes[0].legend(fontsize=7.5, loc="lower left")
+        fig.suptitle("DVC Challenge 2.0, Yang_Beads_S3: uniaxial stretches, 32-voxel subvolumes 32 voxels apart",
+                     x=0.01, ha="left", fontsize=10, fontweight="bold")
+        fig.tight_layout()
+        _save(fig, out / "public_stretch.png", made)
+
+
 def main(argv: list[str] | None = None) -> None:
     p = argparse.ArgumentParser(prog="python -m zvdvc.bench.doc_figures", description=__doc__.split("\n\n")[0])
     p.add_argument("--runs", default="runs")
@@ -356,6 +546,7 @@ def main(argv: list[str] | None = None) -> None:
     error_floor_figures(runs, docs / "validation" / "figures", made, skipped)
     speed_figure(runs, docs / "benchmarks" / "figures" / "summary", made, skipped)
     gds_figure(runs, docs / "benchmarks" / "figures" / "summary", made, skipped)
+    public_figures(runs, docs / "validation" / "figures", made, skipped)
     for m in made:
         print("wrote", m)
     for s in skipped:
