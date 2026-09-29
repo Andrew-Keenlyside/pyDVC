@@ -65,9 +65,11 @@ case.
 ### `dvc_in`
 
 **Syntax** (`read_dvc_input`). Each non-empty line is `key<whitespace>value`;
-`#` starts a comment anywhere on a line; values keep inner spaces (for
-example `rigid_trans  34.0 4.0 0.0`). Lists may be separated by spaces or
-commas.
+values keep inner spaces (for example `rigid_trans  34.0 4.0 0.0`). A line
+starting with `#` is a comment, and a comment starts at `###` or at a `#`
+after whitespace, so a `#` inside a path is kept. Lists may be separated by
+spaces or commas. An integer key accepts a whole float (`500.0`), as CCPi
+reads it.
 
 **Keys read.** The keys below are mapped onto the run configuration; the full
 mapping, with the fields each sets, is in {doc}`run_config` ("Importing a CCPi
@@ -87,8 +89,14 @@ mapping, with the fields each sets, is in {doc}`run_config` ("Importing a CCPi
 **Not supported or not mapped.**
 
 * `vol_bit_depth` other than 8 or 16 is refused, as CCPi reads unsigned 8/16-bit
-  voxels only.
-* Any key not in the table is read and ignored, without a warning.
+  voxels only. `vol_endian` must be `little` or `big` (it is ignored for 8-bit
+  data, as in CCPi); `subvol_thresh` must be `on` or `off`.
+* The converted configuration is validated as a YAML one is
+  (`RunConfig.validate`: choices, ranges, not-implemented options), and the
+  error names the `dvc_in` key, e.g. `subvol_size: -16.0 is out of range`.
+* A key not in the table is ignored with a warning (CCPi ignores it
+  silently). `fine_search`, which CCPi's manual lists but `dvc` 22 does not
+  read, is ignored without one.
 * Settings that exist only in zvDVC (`prefilter_sigma`, `method`,
   `max_iterations`, tolerances, seeding strategy, tiles) cannot be set from a
   `dvc_in`; the import uses their defaults, with `seeding.strategy: wavefront`
@@ -98,12 +106,16 @@ mapping, with the fields each sets, is in {doc}`run_config` ("Importing a CCPi
 **Behaviour of CCPi `dvc` 25.0.0** (conda `ccpi-dvc`, reports v22.0.0-19),
 found by running it and followed by `write_dvc_input`:
 
-* a value keeps its line ending unless a `###` comment follows it on the line,
-  so `reference_filename  ref.raw` fails with "cannot find file";
-  `write_dvc_input` ends every line with a comment;
+* the parser needs a token after each value: it appends a newline to each
+  line and takes the value up to the next tab, so a value at the very end of
+  a line keeps the newline, and `reference_filename<TAB>ref.raw` fails with
+  "cannot find file". `write_dvc_input` therefore ends every value line with a
+  tab and a `### zvdvc` comment;
 * `num_points_to_process` and `starting_point` are required, although the
   manual lists them as optional;
-* `dvc` exits 0 after input errors; the missing `.disp` is the signal;
+* `dvc` exits 0 after input errors; the missing `.disp` is the signal. iDVC
+  checks the process's exit *status* (normal exit or crash), not its exit
+  code, so it too can tell a failed run only by the missing `.disp`;
 * the `.disp` holds `n x y z status objmin u v w` only, with no rotation or
   strain columns, even for 6/12-DOF runs.
 
@@ -147,7 +159,7 @@ zvDVC writes two variants:
 | rows | every written point, sorted by `point_id` | the processed points (`num_points_to_process`), in processing order (distance from the start point) |
 | number format | `%.9g` throughout | as CCPi: `x y z status objmin` in C++'s default format (6 significant digits, like `%g`), `u v w` fixed to 6 decimals |
 | statuses | `to_ccpi()`: codes below −3 become −3 | the same |
-| failed points | displacement and `objmin` as stored (`objmin` may be `nan`) | displacement written as 0, non-finite `objmin` as 0, as CCPi writes failed points |
+| failed points | displacement written as 0, non-finite `objmin` as 0, as CCPi writes failed points (the store and `.npz` keep the raw values) | the same |
 
 `read_disp` reads both, and also older CCPi files that carry `phi the psi`
 and strain columns after `w`.
@@ -187,13 +199,15 @@ number convg fail = 0	(0.000%)
 
 The echo repeats the input settings in CCPi's order and grouping (the
 `vol_endian` line only for 16-bit data; the three threshold lines only with
-`subvol_thresh on`). While the run is in progress, the file holds the echo, a
-`Run start:` line and one `<count> points of <N> at <rate> pt/sec` line per
-batch; it is rewritten in the final layout at the end.
+`subvol_thresh on`). While the run is in progress, a temporary file next to
+it (`.<name>.stat.<pid>.tmp`) holds the echo, a `Run start:` line and one
+`<count> points of <N> at <rate> pt/sec` line per batch; at the end it is
+rewritten in the final layout and renamed to `<output_filename>.stat`.
 
 **zvDVC summary layout** (`io.ccpi.write_stat`, written by `zvdvc finalize`
 and `zvdvc solve`) is different: point count, seconds, points per second,
-one line per status with zvDVC's names, and the configuration as YAML
+one line per status with zvDVC's names, CCPi-style `number ...` counts, and
+the configuration as YAML
 ({doc}`results_store`). iDVC cannot parse it; it is for people and for
 `read_stat_throughput`, which reads the rate from either layout.
 
@@ -208,16 +222,24 @@ zvdvc-dvc                   # CCPi's usage text
 
 **What it does** (`ccpi_dropin.run`):
 
-1. Reads `dvc_in` and converts it with `run_config_from_dvc_input`, resolving
-   relative paths against the **working directory**, as CCPi does. It reads
-   the `.roi` directly.
+1. Reads and checks every input before touching any output: converts
+   `dvc_in` with `run_config_from_dvc_input` (validated, as above), resolving
+   relative paths against the **working directory**, as CCPi does; checks
+   that the backend exists and can run here; reads the `.roi` directly and
+   refuses an empty cloud, non-finite coordinates or repeated labels; opens
+   both volumes (their size must match the header and dimensions exactly,
+   {doc}`volumes`) and checks they have the same shape; builds the template;
+   and checks that the output folder exists and is writable.
 2. Orders points by distance from `starting_point` (or the first point) and
    keeps the first `num_points_to_process`.
-3. Writes the `.stat` echo and a `.disp` header, then prints a banner.
+3. Writes the `.stat` echo and a `.disp` header to temporary files next to
+   the outputs, then prints a banner.
 4. Runs the in-memory wavefront solve (CCPi's order and neighbour seeding,
    `report_convg_fail: false`) with both whole volumes in host memory. The
    backend is `--backend`, else `$ZVDVC_BACKEND`, else `fused` with a GPU,
-   else `cpu` with numba, else `numpy`.
+   else `cpu` with numba, else `numpy`. If a GPU engine runs out of memory
+   for the two volumes, the solve falls back to the `cpu` engine with a
+   warning (an error if numba is missing).
 5. Prints one progress line per point in processing order, which iDVC's
    progress bar reads (the count before the `/`):
 
@@ -228,15 +250,22 @@ zvdvc-dvc                   # CCPi's usage text
    Failed points print `Range_Fail`, `Convg_Fail` or `Not_Searched` after the
    coordinates. If stdout is closed, it stops printing and still writes the
    results.
-6. Writes `<output_filename>.disp` and the final `<output_filename>.stat`, and
-   exits 0.
+6. Writes the final `.disp` and `.stat` to the temporary files and renames
+   them to `<output_filename>.stat` and then `<output_filename>.disp` (last:
+   a `.disp` means the run finished), and exits 0.
 
-If `dvc_in` cannot be opened it prints `-> Can't open <file>` and exits 1; if
-the input cannot be parsed or the `.roi` read, it prints `input file problem:
-...` and exits 1. A volume file that is missing or cannot be read stops the run
-with a Python traceback and a non-zero exit. Unlike CCPi, which exits 0 after input errors, a non-zero
-exit tells the caller something went wrong. `dvc example` and `dvc manual`
-print a note to run CCPi's own `dvc`.
+If `dvc_in` cannot be opened it prints `-> Can't open <file>` and exits 1. Any
+problem found in step 1 (a bad key or value, a missing, truncated or
+misdescribed volume, a bad `.roi`, an unusable backend, an unwritable output
+folder) prints one `input file problem: <error>` line and exits 1; a failure
+during the solve prints one `run failed: <error>` line and exits 1. Neither
+prints a traceback. A failed run removes its temporary files and never
+writes a `.disp` or `.stat`, so the outputs of an earlier run with the same
+`output_filename` are left as they were. Warnings are printed as one
+`warning: ...` line on stderr. Unlike CCPi, which exits 0 after input errors,
+a non-zero exit tells a script something went wrong; iDVC ignores the exit
+code and sees the missing `.disp`. `dvc example` and `dvc manual` print a
+note to run CCPi's own `dvc`.
 
 **Limits and differences from CCPi.**
 

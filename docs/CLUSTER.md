@@ -114,7 +114,12 @@ qsub -v CONFIG=...,STAGES="run finalize" sge/zvdvc.qsub     # after a time-out: 
 Convert large inputs to OME-Zarr once (`zvdvc convert`) and set
 `cluster.tile_shape` so each GPU gets several tiles (the campaign's `data`
 step shows the rule: ≥ 4 tiles per GPU). Results store, `.disp` export and
-resume work as on the workstation.
+resume work as on the workstation. If tiles are still unwritten when `run`
+ends, it exits with status 3, so the job stops before `finalize` (which would
+refuse anyway); resubmit with `STAGES="run finalize"`. Resume with the same
+config and the same volume paths: the results store records the volumes'
+resolved paths, and a job that sees them elsewhere (another bind path, a
+copy) refuses to add to it.
 
 ## Troubleshooting
 

@@ -59,6 +59,24 @@ def test_the_tiled_pipeline_writes_displacement_sd(cfg, tmp_path):
     assert np.isfinite(got["displacement_sd"][got["status"] == 0]).mean() > 0.95
 
 
+def test_wavefront_seeding_writes_the_in_memory_displacement_sd(cfg, tmp_path):
+    from zvdvc.io.results import ResultStore
+    from zvdvc.pipeline import coordinator
+    from zvdvc.pipeline.inmemory import load_points, solve_in_memory
+
+    c = dataclasses.replace(cfg, output=str(tmp_path / "w.zarrvectors"), workdir=str(tmp_path / "ww"), uncertainty_seeds=2,
+                            seeding=SeedingSpec(strategy="wavefront"))
+    coordinator.prepare(c, backend=_backend())
+    coordinator.seed(c, backend=_backend())
+    got = ResultStore(c.output).read_all()
+    order = np.argsort(got["point_id"])
+    pid, xyz = load_points(c)
+    ref = solve_in_memory(c, pid, xyz, strategy="wavefront", backend=_backend())
+    np.testing.assert_array_equal(got["point_id"][order], pid)
+    assert np.isfinite(ref.displacement_sd[ref.status == 0]).mean() > 0.95
+    np.testing.assert_array_equal(got["displacement_sd"][order], ref.displacement_sd.astype(np.float32))
+
+
 def test_without_repeats_the_store_holds_nan_and_older_stores_still_work(cfg, tmp_path):
     from zvdvc.io import results as results_mod
     from zvdvc.io.results import ResultStore

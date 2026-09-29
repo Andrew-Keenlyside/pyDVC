@@ -72,7 +72,7 @@ class QueueSource:
 @dataclass
 class WorkerStats:
     device: int
-    tiles: int = 0
+    tiles: int = 0                     # solved
     points: int = 0
     seconds_compute: float = 0.0
     seconds_io_wait: float = 0.0       # compute loop idle waiting for bricks: should be ~0
@@ -81,6 +81,7 @@ class WorkerStats:
     tiles_skipped: int = 0
     seconds_write_wait: float = 0.0    # compute loop blocked on a full write queue
     errors: list[str] = field(default_factory=list)
+    tiles_written: int = 0             # solved and written to the results store
 
 
 @dataclass
@@ -169,13 +170,14 @@ class TileWorker:
         from zvdvc.pipeline.batching import iter_batches, morton_order
         from zvdvc.pipeline.tiling import lookup_seeds
         from zvdvc.solver.gauss_newton import solve_batch
+        from zvdvc.status import PointStatus
 
         pts = loaded.points
         xyz = np.asarray(pts.xyz, dtype=np.float64)
         n, dof = len(xyz), self.cfg.search.dof
         seeds = lookup_seeds(np.asarray(pts.point_id), self.seed_field, self.cfg.search.rigid_trans)
         out = {
-            "status": np.zeros(n, dtype=np.int8),
+            "status": np.full(n, PointStatus.NOT_SEARCHED, dtype=np.int8),
             "objmin": np.zeros(n, dtype=np.float32),
             "displacement": np.zeros((n, 3), dtype=np.float32),
             "params": np.zeros((n, dof), dtype=np.float32),
@@ -236,6 +238,7 @@ class TileWorker:
                     with nvtx_range(f"write tile {tile.id}"):
                         self.results.write_tile(pts, res)
                     self.events.record("write", tile=tile.id, t0=t0, t1=time.time())
+                    stats.tiles_written += 1
                     source.done(tile, True)
                 except Exception:
                     write_errors.append(traceback.format_exc())
@@ -298,6 +301,7 @@ class TileWorker:
                 continue
             try:
                 self.results.write_tile(item[1], item[2])
+                stats.tiles_written += 1
                 source.done(tile, True)
             except Exception:
                 write_errors.append(traceback.format_exc())

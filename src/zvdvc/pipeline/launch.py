@@ -101,15 +101,14 @@ def _child(cfg_dict: dict[str, Any], slot: int, backend: str, threads: int | Non
         pid_dir = Path(cfg_dict["workdir"]) / "workers"
         pid_dir.mkdir(parents=True, exist_ok=True)
         (pid_dir / f"slot{slot}.pid").write_text(str(os.getpid()))
+        from zvdvc.pipeline.coordinator import _seed_field
         from zvdvc.pipeline.tiling import load_plan, plan_document
         from zvdvc.pipeline.worker import TileWorker
 
         cfg = RunConfig.from_dict(cfg_dict)
         tiles, _ = load_plan(plan_path)
         doc = plan_document(plan_path)
-        seeds = Path(cfg.workdir) / "seeds.npz"
-        worker = TileWorker(cfg, slot, backend=backend, points_store=doc["points_store"],
-                            seed_field_path=seeds if seeds.exists() else None)
+        worker = TileWorker(cfg, slot, backend=backend, points_store=doc["points_store"], seed_field_path=_seed_field(cfg))
         stats = worker.run(_SharedSource({t.id: t for t in tiles}, ids, attempts, failed, lock))
     except Exception:
         stats = WorkerStats(device=slot, errors=[traceback.format_exc()])

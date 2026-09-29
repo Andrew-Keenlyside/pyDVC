@@ -46,6 +46,22 @@ def test_the_filter_matches_scipy_and_gpu_slabs_match_one_pass(tmp_path, monkeyp
     np.testing.assert_allclose(vol.gaussian_filtered(data, 1.0, np.float32), want, rtol=0, atol=1e-4)   # host path
 
 
+def test_a_big_endian_volume_filters_as_the_little_endian_one(tmp_path, monkeypatch):
+    monkeypatch.setattr(vol, "get_xp", lambda d: (_ for _ in ()).throw(ImportError("no cupy")))     # host path
+    data = np.random.default_rng(1).integers(0, 4096, size=(20, 18, 22)).astype("<u2")
+    for order in "<>":
+        data.astype(f"{order}u2").tofile(tmp_path / f"{order == '>'}.raw")
+    got = {}
+    for order in "<>":
+        spec = VolumeSpec(reference=str(tmp_path / f"{order == '>'}.raw"), deformed="-", raw_shape_xyz=(22, 18, 20),
+                          raw_dtype=f"{order}u2", prefilter_sigma=1.0)
+        v = vol.open_volume(spec, "reference")
+        assert v.dtype == np.uint16 and v.dtype.isnative
+        got[order] = v.read_brick(Box((2, -3, 4), (18, 15, 30)), device="cpu").data
+    assert got[">"].dtype.isnative
+    np.testing.assert_array_equal(got[">"], got["<"])
+
+
 @pytest.mark.gpu
 def test_device_bricks_are_filtered_on_the_device(tmp_path):
     if not gpu_available():

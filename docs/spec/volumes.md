@@ -88,11 +88,36 @@ TIFF stack, into OME-Zarr once.
 
 | input | reader | how it is recognised | needs |
 |---|---|---|---|
-| OME-Zarr group or Zarr array | `ZarrVolume` | suffix `.zarr` (including `.ome.zarr`), or a directory with `zarr.json` | a 3-D array; in a group, `volumes.array_path` (default `"0"`) |
+| OME-Zarr group or Zarr array | `ZarrVolume` | suffix `.zarr` (including `.ome.zarr`), or a directory with `zarr.json` | a 3-D array; in a group, `volumes.array_path` (default `"0"`). A missing level is an error that lists the levels present. |
 | NumPy `.npy` | `RawVolume` (`np.load(..., mmap_mode="r")`) | suffix `.npy` | a 3-D `[z, y, x]` array |
-| MetaImage `.mhd` | `RawVolume` | suffix `.mhd` | detached data file (`ElementDataFile` not `LOCAL`); `HeaderSize` $\ge 0$; element types `MET_UCHAR`, `MET_CHAR`, `MET_USHORT`, `MET_SHORT`, `MET_UINT`, `MET_INT`, `MET_FLOAT`, `MET_DOUBLE`; byte order from `BinaryDataByteOrderMSB` / `ElementByteOrderMSB` |
+| MetaImage `.mhd` | `RawVolume` | suffix `.mhd` | one uncompressed, single-channel 3-D image in one detached data file: `ElementDataFile` not `LOCAL` (`.mha`), `LIST` or a file pattern; no `CompressedData = True`; `ElementNumberOfChannels` 1; `HeaderSize` $\ge 0$; element types `MET_UCHAR`, `MET_CHAR`, `MET_USHORT`, `MET_SHORT`, `MET_UINT`, `MET_INT`, `MET_FLOAT`, `MET_DOUBLE`; byte order from `BinaryDataByteOrderMSB` / `ElementByteOrderMSB` |
 | flat raw | `RawVolume` (`np.memmap`) | any other suffix | `volumes.raw_shape_xyz`, `volumes.raw_dtype`, optional `volumes.raw_header_bytes` |
 | TIFF stack | not read directly | | convert with `zvdvc convert` (needs `tifffile`, the `zvdvc[tiff]` extra) |
+
+Opening a volume checks what can be checked cheaply:
+
+* **Raw and `.mhd` size.** The data file must hold exactly the header plus
+  the voxels. A smaller file is truncated; a larger one is misdescribed. The
+  error gives both sizes and names the settings to check: the bit depth
+  (`raw_dtype`, CCPi `vol_bit_depth`), the dimensions (`raw_shape_xyz`,
+  `vol_wide`/`vol_high`/`vol_tall`) and the header length
+  (`raw_header_bytes`, `vol_hdr_lngth`), or `DimSize`, `ElementType` and
+  `HeaderSize` of a `.mhd`.
+* **Unstored Zarr chunks.** An array with fewer stored chunks than it has
+  **warns**; missing chunks read as the fill value. zarr leaves chunks that
+  hold only the fill value unwritten by default, so an array from another tool
+  can be complete with chunks missing, but a truncated copy looks the same.
+  `zvdvc convert` stores every chunk, so a missing chunk in its output means
+  an incomplete copy.
+
+Two checks happen as bricks are read, where the data is already in memory:
+
+* **Byte order.** Every reader returns bricks in the host's byte order, so
+  big-endian data reaches every engine as native data, and the reader's
+  `dtype` is the native type.
+* **Non-finite voxels.** A float brick holding NaN or inf is an error. A NaN
+  would otherwise spread through the interpolation to every point whose
+  subvolume touches it. Checking at open time would read the whole volume.
 
 When `volumes.prefilter_sigma` $> 0$ the reader is wrapped in
 `FilteredVolume`, which Gaussian-filters each brick ({doc}`method`,
@@ -119,13 +144,18 @@ buffers is planned and has **not** been implemented or measured; see
 ### `zvdvc convert`
 
 ```bash
-zvdvc convert SRC DST [--chunk 128] [--shard 1024] [--shape-xyz X Y Z] [--dtype DTYPE] [--header BYTES]
+zvdvc convert SRC DST [--chunk 128] [--shard 1024] [--shape-xyz X Y Z] [--dtype DTYPE] [--header BYTES] [--overwrite]
 ```
 
 `convert_to_ome_zarr` writes `DST` as an OME-Zarr v0.5 group with one sharded,
 zstd-compressed level `"0"` and `multiscales` metadata (unit scale). It
 streams slabs of one shard's depth in $z$, so memory stays bounded for inputs
-of 100 GB or more.
+of 100 GB or more. Every chunk is stored, even an empty one. The output is
+written next to `DST` and renamed into place at the end, so an interrupted
+conversion leaves no partial `DST`. An existing `DST` is an error unless
+`--overwrite`, and even then only an existing Zarr store is replaced (the old
+one is removed once the new one is complete). `DST` may not be `SRC`, contain
+it or lie inside it.
 
 | option | default | meaning |
 |---|---|---|
@@ -134,9 +164,11 @@ of 100 GB or more.
 | `--shape-xyz X Y Z` | | `.raw` only: volume size |
 | `--dtype` | | `.raw` only: numpy dtype, e.g. `'<u2'` or `'\|u1'` |
 | `--header` | 0 | `.raw` only: header bytes to skip |
+| `--overwrite` | off | replace an existing Zarr store at `DST` |
 
-`SRC` may be `.raw`, `.mhd`, `.npy`, `.tif`/`.tiff` or an existing Zarr array.
-Input in non-native byte order is written in native order. For example, a
+`SRC` may be `.raw`, `.mhd`, `.npy`, `.tif`/`.tiff` or an existing Zarr array
+(its unstored chunks are written as the fill value). Input in non-native byte
+order is written in native order. For example, a
 headerless big-endian 16-bit volume of 1520 × 1257 × 1260 voxels:
 
 ```bash
@@ -167,8 +199,9 @@ A tile's bricks are planned once, from point positions only
 3. **Deformed box.** The reference box shifted by the median seed of the
    tile's points (`Box.shift_xyz`, rounded outward), then grown per axis by
    $\lceil\max_i\lvert\text{seed}_i - \text{median}\rvert\rceil$, the spread of
-   seeds in the tile. Seeds are `rigid_trans`, or the coarse seed field when
-   `<workdir>/seeds.npz` exists.
+   seeds in the tile. Seeds are `rigid_trans`, or, with
+   `seeding.strategy: coarse`, the seed field in `<workdir>/seeds.npz`
+   (another strategy ignores a `seeds.npz` left in the work directory).
 
 These boxes are stored in `plan.json` (`points_box`, `ref_box`, `def_box`,
 each `{"lo": [z, y, x], "hi": [z, y, x]}`). Read amplification per volume is
@@ -196,7 +229,7 @@ unset memory for subvolumes that leave the image
 
 ### Native dtypes
 
-Bricks land on the device in the volume's dtype; the kernels convert to
+Bricks land on the device in the volume's dtype, in native byte order; the kernels convert to
 float32 in registers. The fused CUDA kernels are compiled for `uint8`,
 `uint16` and `float32` bricks; a brick of any other dtype is converted to
 float32 when it is prepared. The CPU (numba) engine reads the native dtype

@@ -17,7 +17,7 @@ class PointStatus(IntEnum):
     NOT_SEARCHED = -3   # never attempted (beyond num_points_to_process, or pending)
     # zvDVC extensions
     THRESH_FAIL = -4    # subvol_thresh: foreground fraction below min_fraction
-    SINGULAR = -5       # normal equations ill-conditioned (e.g. featureless subvolume)
+    SINGULAR = -5       # ill-conditioned: featureless reference or target subvolume, or a non-finite result
 
     def to_ccpi(self) -> int:
         return int(self) if self >= PointStatus.NOT_SEARCHED else int(PointStatus.NOT_SEARCHED)

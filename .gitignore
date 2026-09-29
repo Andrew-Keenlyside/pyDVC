@@ -19,3 +19,4 @@ runs/
 *.disp
 *.stat
 docs/_build/
+.claude/worktrees/

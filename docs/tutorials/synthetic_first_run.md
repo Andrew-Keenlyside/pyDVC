@@ -47,6 +47,7 @@ The flags ([`cli.py`](https://github.com/Andrew-Keenlyside/zvDVC/blob/main/src/z
 | `--objective` | `znssd` | `sad`, `ssd`, `zssd`, `nssd` or `znssd` |
 | `--disp-max` | `8` | search range from the seed (voxels) |
 | `--out` | required | output folder |
+| `--overwrite` | off | replace a case already in `--out`; without it `synth` refuses |
 
 Interpolation is always tricubic for synthetic cases.
 
@@ -149,8 +150,12 @@ A tile must be a whole number of point chunks per axis. 64 is two chunks of
 32; a 48³ tile is refused by `plan`:
 
 ```text
-ValueError: tile_shape (48, 48, 48) (z, y, x) is not a multiple of the point-cloud chunk (32.0, 32.0, 32.0) (x, y, z)
+zvdvc plan: error: tile_shape (48, 48, 48) (z, y, x) is not a multiple of the point-cloud chunk (32.0, 32.0, 32.0) (x, y, z)
 ```
+
+A user error like this prints one line and exits with status 2; add
+`--traceback` before the command (`zvdvc --traceback plan ...`) to see where
+it came from.
 
 {doc}`/how_to/choose_tiles_and_batches` covers choosing tile sizes for real data.
 
@@ -164,9 +169,9 @@ zvdvc plan data/synth128/config.yaml
 {'tiles': 8, 'points': 125, 'memory': {'brick_bytes': 2370816, 'in_flight_bytes': 2370816, 'batch_bytes': 502416, 'device_bytes': 9983806668, 'fits': True}, 'plan': '/…/data/synth128/run/plan.json'}
 ```
 
-`plan` reads the point store (not the volumes), groups its chunks into tiles,
-works out each tile's bricks, checks that they fit in device memory, and
-allocates the results store. It prints:
+`plan` reads the point store and the volumes' metadata (not their voxels),
+groups the point chunks into tiles, works out each tile's bricks, checks
+that they fit in device memory, and allocates the results store. It prints:
 
 | key | meaning here |
 |---|---|
@@ -185,8 +190,11 @@ points span 32 voxels per axis, so its brick is 32 + 2 × 26 = 84 voxels.
 
 `plan` also writes `run/plan.json`: every tile's cells, point count, point box,
 reference and deformed brick boxes and cost estimate, the node assignment,
-the full config, the halo, the subvolume template's hash, and the versions of
-zvDVC, zarr-vectors, zarr and numpy. A resumed run is checked against it.
+the full config, the halo, the subvolume template's hash, the run
+fingerprint (the settings that change results, both volumes' identities and
+a digest of the points), and the versions of zvDVC, zarr-vectors, zarr and
+numpy. `seed` and `run` check the config against it and refuse one that
+would change the results.
 
 With a `.roi` file as `points`, `plan` first imports it into
 `run/points.zarrvectors`.
@@ -206,8 +214,8 @@ What `seed` does depends on `seeding.strategy`:
 | strategy | `seed` does | then `run` |
 |---|---|---|
 | `rigid` | nothing; every point starts from `search.rigid_trans` | solves every tile independently |
-| `wavefront` | the whole solve, in CCPi's order, with both volumes in memory; writes every result into the store | finds every tile written |
-| `coarse` | solves every `coarse_stride`-th grid point, interpolates a seed for every point, writes `seeds.npz`, re-plans the bricks | solves every tile from those seeds |
+| `wavefront` | the whole solve, in CCPi's order, with both volumes in memory; writes every result into the store | finds every tile written (and refuses to start if `seed` has not written them) |
+| `coarse` | solves every `coarse_stride`-th grid point, interpolates a seed for every point, writes `seeds.npz`, re-plans the bricks | solves every tile from those seeds (and refuses to start without them) |
 
 `wavefront` is CCPi-parity mode and the default for synthetic cases, so here
 all 125 points were solved in about half a second. `wavefront` and `coarse`
@@ -223,7 +231,7 @@ zvdvc run data/synth128/config.yaml
 ```
 
 ```text
-device 0: 0 tiles solved, 8 already written, 0 points, 0.00 GB read, compute 0.0 s, I/O wait n/a, status counts {}, 0 errors
+device 0: 0 tiles solved, 0 written, 8 already written, 0 points, 0.00 GB read, compute 0.0 s, I/O wait n/a, status counts {}, 0 errors
 ```
 
 `run` is the tile loop: one worker process per GPU, each taking tiles from a
@@ -233,9 +241,15 @@ checks the results store, and skips a tile whose cells are all written.
 Here `seed` has already written every tile, so there is nothing left to do.
 Section 9 shows the loop doing real work, and resuming.
 
-One line per worker: tiles solved and skipped, points, bytes read, compute
-time, the share of time the compute loop waited for bricks (`I/O wait`),
-status counts, and errors.
+One line per worker: tiles solved, tiles written to the store, tiles skipped
+as already written, points, bytes read, compute time, the share of time the
+compute loop waited for bricks (`I/O wait`), status counts, and errors. A
+tile that is solved but fails to write counts as solved, not written.
+
+If any of this node's tiles is still unwritten at the end (a tile failed
+twice), `run` prints `zvdvc run: error: N tiles are not written (see
+failed_tiles.json in <workdir>); run `zvdvc run` again` and exits with status
+3, so a job script can stop before `finalize`.
 
 ### Backends
 
@@ -264,7 +278,9 @@ RunSummary(n_points=125, seconds=1.043102293042466, counts={0: 125})
 ```
 
 `finalize` completes the results store (it rebuilds zarr-vectors' presence
-index and writes the metadata), then writes a summary. `--disp` adds a CCPi
+index and writes the metadata), then writes a summary. It refuses while any
+cell is unwritten; `--allow-partial` finalises anyway and exports the
+missing points as `NOT_SEARCHED`. `--disp` adds a CCPi
 `.disp` export and `--pyramid` a zarr-vectors pyramid for viewers. The
 workdir now holds:
 
@@ -282,8 +298,12 @@ n	x	y	z	status	objmin	u	v	w
 …
 ```
 
-`results.stat` lists the point count, time, rate and status counts, then the
-full configuration. Its time comes from the last `run` (`run_stats.json`), so
+Points that are not `GOOD` would be written with `u v w = 0`, as CCPi writes
+them; the store keeps their raw values.
+
+`results.stat` lists the point count, time, rate and status counts (zvDVC's,
+then CCPi-style `number successful`, `range fail`, `convg fail`, `not
+searched`), then the full configuration. Its time comes from the last `run` (`run_stats.json`), so
 in `wavefront` mode, where `seed` does the solving, it is the time of a `run`
 that had nothing to do.
 
@@ -380,7 +400,7 @@ zvdvc run  data/synth128/config_rigid.yaml --max-tiles 3
 
 ```text
 {'strategy': 'rigid'}
-device 0: 3 tiles solved, 0 already written, 63 points, 0.01 GB read, compute 0.1 s, I/O wait 0.0 %, status counts {0: 63}, 0 errors
+device 0: 3 tiles solved, 3 written, 0 already written, 63 points, 0.01 GB read, compute 0.1 s, I/O wait 0.0 %, status counts {0: 63}, 0 errors
 ```
 
 Run it again, and only the other five are solved:
@@ -390,19 +410,35 @@ zvdvc run data/synth128/config_rigid.yaml
 ```
 
 ```text
-device 0: 5 tiles solved, 3 already written, 62 points, 0.01 GB read, compute 0.2 s, I/O wait 0.0 %, status counts {0: 62}, 0 errors
+device 0: 5 tiles solved, 5 written, 3 already written, 62 points, 0.01 GB read, compute 0.2 s, I/O wait 0.0 %, status counts {0: 62}, 0 errors
 ```
 
-A third `run` finds nothing to do (`0 tiles solved, 8 already written`).
-After `finalize`, `zvdvc compare` gives the same figures as section 7.
+A third `run` finds nothing to do (`0 tiles solved, 0 written, 8 already
+written`). After `finalize`, `zvdvc compare` gives the same figures as
+section 7. Had you run `finalize` after the first, partial `run`, it would
+have refused:
+
+```text
+zvdvc finalize: error: /…/data/synth128/results_rigid.zarrvectors: 11 of 27 cells unwritten; run `zvdvc run` again (or finalize --allow-partial to export their points as NOT_SEARCHED)
+```
 
 This is how an interrupted or pre-empted job resumes: resubmit `run`. Workers
 write each cell's `status` last, and a cell counts as written only when every
 result array holds it, so a worker killed half-way through a cell leaves
 nothing that looks finished. Tiles still missing after a run are listed in
 `run_stats.json` and `failed_tiles.json`. The store also records the
-subvolume template's hash and `prefilter_sigma`, and `plan` refuses to add
-results made with other settings to it.
+subvolume template's hash, `prefilter_sigma` and the run fingerprint, and
+`plan`, `seed` and `run` refuse to add results made with other settings,
+volumes or points to it. Resume with the same config. Changing the
+objective in `config_rigid.yaml`, for example, stops the next `run`:
+
+```text
+zvdvc run: error: the config differs from the one `zvdvc plan` used (/…/data/synth128/run_rigid/plan.json) in search.objective: run with the original config, or plan again with a new output
+```
+
+The volumes' resolved paths are part of the fingerprint, so moving or
+copying the case folder also refuses a resume into the old store; plan again
+with a new `output` and `workdir`.
 
 ## 10. Other backends
 
@@ -414,8 +450,8 @@ zvdvc run  data/synth128/config_cpu.yaml --backend cpu --cpu-workers 2
 ```
 
 ```text
-device 1: 5 tiles solved, 0 already written, 68 points, 0.01 GB read, compute 12.9 s, I/O wait 0.0 %, status counts {0: 68}, 0 errors
-device 0: 3 tiles solved, 0 already written, 57 points, 0.01 GB read, compute 13.3 s, I/O wait 0.0 %, status counts {0: 57}, 0 errors
+device 1: 5 tiles solved, 5 written, 0 already written, 68 points, 0.01 GB read, compute 12.9 s, I/O wait 0.0 %, status counts {0: 68}, 0 errors
+device 0: 3 tiles solved, 3 written, 0 already written, 57 points, 0.01 GB read, compute 13.3 s, I/O wait 0.0 %, status counts {0: 57}, 0 errors
 ```
 
 (`config_cpu.yaml` is `config_rigid.yaml` with its own `output` and

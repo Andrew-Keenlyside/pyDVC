@@ -55,6 +55,24 @@ def singular_pivot(dtype: Any) -> float:
     return 1e-10 if np.dtype(dtype) == np.float64 else 1e-6
 
 
+def flat_reference(dtype: Any) -> float:
+    """Largest ``(max f - min f) / max |f|`` of a point's reference samples that counts as no texture (SINGULAR).
+
+    Well above the interpolation rounding of a constant volume (about 1e-6 in
+    float32, 1e-15 in float64), and below any texture the precision can resolve.
+    """
+    return 1e-12 if np.dtype(dtype) == np.float64 else 1e-5
+
+
+def textureless(xp: Any, f: Any, dtype: Any) -> Any:
+    """(B,) whether the reference samples ``f`` (B, M) are constant to within :func:`flat_reference`.
+
+    Non-finite samples count as no texture too.
+    """
+    spread = f.max(axis=1) - f.min(axis=1)
+    return ~(spread > flat_reference(dtype) * xp.abs(f).max(axis=1))
+
+
 @dataclass
 class BatchState:
     params: Any        # (B, ndof)

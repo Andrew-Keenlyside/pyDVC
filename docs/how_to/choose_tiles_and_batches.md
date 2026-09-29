@@ -112,7 +112,7 @@ point-store cells per axis (within 1 %, for tiles that cover a volume edge
 not divisible by the cell count). Otherwise `plan` refuses it:
 
 ```text
-ValueError: tile_shape (48, 48, 48) (z, y, x) is not a multiple of the point-cloud chunk (32.0, 32.0, 32.0) (x, y, z)
+zvdvc plan: error: tile_shape (48, 48, 48) (z, y, x) is not a multiple of the point-cloud chunk (32.0, 32.0, 32.0) (x, y, z)
 ```
 
 ## Memory: what `plan` checks
@@ -241,8 +241,9 @@ Batch size is limited by this scratch, not by the bricks. Leave
 | `brick_dtype` | `native` | bricks keep the volume's type (u8 / u16 / f32) on the device |
 | `scheduler` | `dynamic` | workers on a node share one tile queue |
 
-`brick_dtype` and `scheduler` are accepted but not read by the pipeline yet:
-bricks are always native and the queue always dynamic.
+`brick_dtype` and `scheduler` are accepted but not used by the pipeline yet:
+bricks are always native and the queue always dynamic. A value other than the
+default gives a warning.
 
 The synthetic cases and the case A configuration use `prefetch_depth: 1`,
 with the whole volume as one tile.

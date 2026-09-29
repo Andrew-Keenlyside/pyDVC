@@ -125,3 +125,181 @@ def test_the_drop_in_agrees_with_ccpi(case, monkeypatch):
     b = (case / "ccpi_out.stat").read_text().splitlines()[:30]
     diff = [(x, y) for x, y in zip(a, b) if x != y]
     assert all(x.startswith("output_filename") or x.startswith("running under") for x, _ in diff), diff
+
+
+# --------------------------------------------------------------------------- failures
+
+
+def _variant(case, name, output=None, **edits):
+    """``dvc_in.txt`` with some values replaced (``None`` drops the key), writing to ``output`` (default ``name``)."""
+    edits["output_filename"] = str(case / (output or name))
+    lines = []
+    for line in (case / "dvc_in.txt").read_text().splitlines():
+        key = line.split("\t")[0]
+        if key in edits:
+            if edits[key] is None:
+                continue
+            line = f"{key}\t{edits[key]}\t### edited"
+        lines.append(line)
+    (case / f"{name}.dvc_in").write_text("\n".join(lines) + "\n")
+    return case / f"{name}.dvc_in"
+
+
+def _params(case):
+    from zvdvc.io.ccpi import read_dvc_input
+
+    return read_dvc_input(case / "dvc_in.txt")
+
+
+def _bad_inputs(case):
+    """name -> (dvc_in edits, text of the error). Files are written next to the case."""
+    p = _params(case)
+    raw = Path(p["correlate_filename"])
+    (case / "short.raw").write_bytes(raw.read_bytes()[:-1000])
+    ids_xyz = [line.split("\t") for line in Path(p["point_cloud_filename"]).read_text().splitlines()]
+    roi = lambda rows: "".join("\t".join(r) + "\n" for r in rows)                  # noqa: E731
+    (case / "nan.roi").write_text(roi(ids_xyz[:3] + [[ids_xyz[3][0], "nan", ids_xyz[3][2], ids_xyz[3][3]]]))
+    (case / "empty.roi").write_text("")
+    (case / "dup.roi").write_text(roi(ids_xyz[:3] + [[ids_xyz[0][0]] + ids_xyz[3][1:]]))
+    return {
+        "missing_def": (dict(correlate_filename=str(case / "nope.raw")), "volume file not found"),
+        "short_def": (dict(correlate_filename=str(case / "short.raw")), "(truncated?)"),
+        "bits8_on16": (dict(vol_bit_depth="8"), "2 times as large"),
+        "hdr100": (dict(vol_hdr_lngth="100"), "vol_hdr_lngth"),
+        "dof5": (dict(num_srch_dof="5"), "num_srch_dof: 5 is not one of"),
+        "geom_cyl": (dict(subvol_geom="cylinder"), "subvol_geom"),
+        "obj_foo": (dict(obj_function="foo"), "obj_function"),
+        "interp_foo": (dict(interp_type="spline"), "interp_type"),
+        "npts0": (dict(subvol_npts="0"), "subvol_npts: 0 is out of range"),
+        "size_neg": (dict(subvol_size="-16"), "subvol_size"),
+        "dispmax0": (dict(disp_max="0"), "disp_max"),
+        "endian_typo": (dict(vol_endian="BIG_ENDIAN"), "vol_endian"),
+        "missing_npts": (dict(subvol_npts=None), "missing required keys ['subvol_npts']"),
+        "nan_roi": (dict(point_cloud_filename=str(case / "nan.roi")), "non-finite coordinate"),
+        "empty_roi": (dict(point_cloud_filename=str(case / "empty.roi")), "no points"),
+        "dup_roi": (dict(point_cloud_filename=str(case / "dup.roi")), "must be unique"),
+        "missing_roi": (dict(point_cloud_filename=str(case / "nope.roi")), "FileNotFoundError"),
+    }
+
+
+def _snapshot(case, base):
+    return {s: (case / f"{base}.{s}").read_bytes() for s in ("disp", "stat")}
+
+
+def _no_temporaries(case):
+    return not [p.name for p in case.iterdir() if p.name.endswith(".tmp")]
+
+
+def test_failed_rerun_keeps_the_previous_outputs(case, monkeypatch):
+    monkeypatch.chdir(case)
+    assert dropin.run(_variant(case, "good", output="keep"), backend="cpu", out=io.StringIO()) == 0
+    before = _snapshot(case, "keep")
+    for name, (edits, message) in _bad_inputs(case).items():
+        out = io.StringIO()
+        assert dropin.run(_variant(case, name, output="keep", **edits), backend="cpu", out=out) == 1, name
+        lines = [line for line in out.getvalue().splitlines() if line.strip()]
+        assert len(lines) == 1 and lines[0].startswith("input file problem: ") and message in lines[0], (name, lines)
+        assert _snapshot(case, "keep") == before, name
+        assert _no_temporaries(case), name
+
+
+def test_failed_first_run_writes_no_disp(case, monkeypatch):
+    monkeypatch.chdir(case)
+    for name, (edits, _) in _bad_inputs(case).items():
+        assert dropin.run(_variant(case, name, **edits), backend="cpu", out=io.StringIO()) == 1
+        assert not (case / f"{name}.disp").exists() and not (case / f"{name}.stat").exists(), name
+
+
+def test_backend_from_the_environment_is_checked(case, monkeypatch):
+    monkeypatch.chdir(case)
+    monkeypatch.setenv("ZVDVC_BACKEND", "fusd")
+    out = io.StringIO()
+    assert dropin.run(_variant(case, "backend_typo"), out=out) == 1
+    assert "input file problem: ValueError: ZVDVC_BACKEND: unknown backend 'fusd'" in out.getvalue()
+    assert not (case / "backend_typo.disp").exists()
+
+
+def test_missing_output_folder_is_an_input_problem(case, monkeypatch):
+    monkeypatch.chdir(case)
+    out = io.StringIO()
+    assert dropin.run(_variant(case, "nodir", output="nodir/out"), backend="cpu", out=out) == 1
+    assert "input file problem: FileNotFoundError: output_filename: folder" in out.getvalue()
+
+
+def test_a_failing_run_is_reported_and_keeps_the_previous_outputs(case, monkeypatch):
+    from zvdvc.pipeline import inmemory
+
+    monkeypatch.chdir(case)
+    assert dropin.run(_variant(case, "good", output="keep_run"), backend="cpu", out=io.StringIO()) == 0
+    before = _snapshot(case, "keep_run")
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("device lost\nsecond line")
+
+    monkeypatch.setattr(inmemory, "solve_in_memory", boom)
+    out = io.StringIO()
+    assert dropin.run(_variant(case, "good", output="keep_run"), backend="cpu", out=out) == 1
+    assert out.getvalue().rstrip().splitlines()[-1] == "run failed: RuntimeError: device lost second line"
+    assert _snapshot(case, "keep_run") == before and _no_temporaries(case)
+    assert dropin.run(_variant(case, "good", output="fresh_fail"), backend="cpu", out=io.StringIO()) == 1
+    assert not (case / "fresh_fail.disp").exists()
+
+
+def test_points_outside_the_volume_are_range_fail(case, monkeypatch):
+    from zvdvc.io.ccpi import read_disp
+
+    monkeypatch.chdir(case)
+    rows = [line.split("\t") for line in Path(_params(case)["point_cloud_filename"]).read_text().splitlines()][:5]
+    rows += [["9001", "500", "20", "20"], ["9002", "-40", "20", "20"], ["9003", "20", "20", "1e6"]]
+    (case / "outside.roi").write_text("".join("\t".join(r) + "\n" for r in rows))
+    path = _variant(case, "outside", point_cloud_filename=str(case / "outside.roi"), num_points_to_process="0",
+                    starting_point=" ".join(rows[0][1:]))
+    assert dropin.run(path, backend="cpu", out=io.StringIO()) == 0
+    d = read_disp(case / "outside.disp")
+    far = np.isin(d["n"], [9001, 9002, 9003])
+    assert far.sum() == 3 and (d["status"][far] == -1).all()
+    assert (d["u"][far] == 0).all() and np.isfinite(d["objmin"]).all()
+    assert (d["status"][~far] == 0).all()
+
+
+class _FakeOOM(MemoryError):
+    """Stands in for cupy.cuda.memory.OutOfMemoryError (a MemoryError)."""
+
+
+def _fake_gpu_engine(monkeypatch, cpu_ok=True):
+    from zvdvc.pipeline import inmemory
+
+    real = inmemory.make_engine
+
+    class GpuEngine:
+        def prepare(self, brick):
+            raise _FakeOOM("Out of memory allocating 1,000,000 bytes")
+
+    def make_engine(backend):
+        if backend == "fused":
+            return GpuEngine()
+        if backend == "cpu" and not cpu_ok:
+            raise ImportError("No module named 'numba'")
+        return real(backend)
+
+    monkeypatch.setattr(inmemory, "make_engine", make_engine)
+
+
+def test_gpu_out_of_memory_falls_back_to_the_cpu_engine(case, monkeypatch):
+    from zvdvc.config import RunConfig
+    from zvdvc.io.pointcloud import read_roi
+    from zvdvc.pipeline.inmemory import solve_in_memory
+
+    monkeypatch.chdir(case)
+    cfg = RunConfig.from_ccpi(case / "dvc_in.txt")
+    pid, xyz = read_roi(cfg.points)
+    pid, xyz = pid[:20], xyz[:20]
+    want = solve_in_memory(cfg, pid, xyz, backend="cpu")
+    _fake_gpu_engine(monkeypatch)
+    with pytest.warns(RuntimeWarning, match="fused engine has not enough memory .* solving on the cpu engine instead"):
+        got = solve_in_memory(cfg, pid, xyz, backend="fused")
+    np.testing.assert_array_equal(got.status, want.status)
+    np.testing.assert_array_equal(got.params, want.params)
+    _fake_gpu_engine(monkeypatch, cpu_ok=False)
+    with pytest.raises(MemoryError, match="the cpu engine needs numba"):
+        solve_in_memory(cfg, pid, xyz, backend="fused")

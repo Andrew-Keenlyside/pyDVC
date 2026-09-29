@@ -78,7 +78,7 @@ class ResultStore:
 
         self.path = str(path)
         if not Path(self.path).exists():
-            raise FileNotFoundError(self.path)
+            raise FileNotFoundError(f"{self.path}: no such results store (run `zvdvc plan` to create it)")
         root_attrs = _root_attrs(self.path)
         meta = root_attrs.get(_ATTR, root_attrs.get(_LEGACY_ATTR))
         if meta is None:
@@ -93,11 +93,13 @@ class ResultStore:
 
     @classmethod
     def allocate(cls, path: str | Path, *, points: PointCloud, dof: int, template_digest: str | None = None,
-                 prefilter_sigma: float = 0.0) -> ResultStore:
+                 prefilter_sigma: float = 0.0, fingerprint: dict[str, Any] | None = None) -> ResultStore:
         """Phase 1 (coordinator): create every array, declare presence deferred.
 
         ``template_digest`` (:meth:`zvdvc.geometry.templates.Template.digest`) is recorded so
         that a resumed or repaired run refuses to mix subvolume templates (:meth:`check_template`).
+        ``fingerprint`` (JSON data identifying the volumes, points and result-affecting settings)
+        is recorded likewise for :meth:`check_fingerprint`.
         """
         attrs = {name: (dtype, dof if ncols is None else ncols) for name, (dtype, ncols) in RESULT_ATTRIBUTES.items()}
         attrs |= OPTIONAL_ATTRIBUTES
@@ -111,6 +113,7 @@ class ResultStore:
             "template_digest": template_digest,
             "prefilter_sigma": float(prefilter_sigma),
             "optional_attributes": sorted(OPTIONAL_ATTRIBUTES),
+            "fingerprint": _jsonable(fingerprint) if fingerprint is not None else None,
         }
         _root_attrs(str(path), "r+")[_ATTR] = meta
         return cls(path, mode="r+")
@@ -133,6 +136,23 @@ class ResultStore:
         if abs(stored - float(sigma)) > 1e-9:
             raise ValueError(f"{self.path} holds results for volumes prefiltered with sigma {stored:g}, not {float(sigma):g}; "
                              "remove it or choose another output")
+
+    def check_fingerprint(self, fingerprint: dict[str, Any]) -> None:
+        """Refuse to add results for other volumes, points or settings than those this store was allocated for.
+
+        A store written before fingerprints were recorded is accepted with a warning.
+        """
+        stored = self.meta.get("fingerprint")
+        if stored is None:
+            import warnings
+
+            warnings.warn(f"{self.path} records no run fingerprint (written before it was stored); cannot check that "
+                          "resumed results use the same volumes, points and settings", stacklevel=2)
+            return
+        diff = fingerprint_diff(stored, fingerprint)
+        if diff:
+            raise ValueError(f"{self.path} holds results for other inputs or settings (differs in {', '.join(diff)}); "
+                             "remove it (or choose another output) to start afresh, or use the original config")
 
     def write_tile(self, tile: TilePoints, results: dict[str, Any]) -> None:
         """Phase 2 (worker): write one tile's cells. ``results`` maps attribute name to (N, cols) arrays in tile row order."""
@@ -197,6 +217,33 @@ class ResultStore:
                 out[name] = np.asarray(extra[f"vertex_attributes/{name}"].data, dtype=dtype).reshape(-1, cols)
         return out
 
+    def reopen_for_writes(self) -> None:
+        """Phase 1 again (coordinator), for a store finalized before every cell was written.
+
+        :meth:`finalize` ends the deferred-presence declaration, after which
+        ``record_presence=False`` writes would stay invisible to
+        :meth:`written_cells` and :meth:`read_all`. Call before workers open the store.
+        """
+        from zarr_vectors import building as zb
+
+        if not self._level.presence_deferred():
+            zb.defer_presence(self._level)
+
     def finalize(self, *, n_points: int, pyramid: bool = False) -> None:
         """Phase 3 (coordinator): rebuild presence and write metadata. Never run while workers are writing."""
         finalize_store(self.path, n_points=n_points, pyramid=pyramid)
+
+
+def _jsonable(value: Any) -> Any:
+    import json
+
+    return json.loads(json.dumps(value))
+
+
+def fingerprint_diff(a: Any, b: Any, prefix: str = "") -> list[str]:
+    """Dotted keys at which two fingerprints (nested JSON data) differ."""
+    if prefix == "":
+        a, b = _jsonable(a), _jsonable(b)
+    if isinstance(a, dict) and isinstance(b, dict):
+        return [key for k in sorted(set(a) | set(b)) for key in fingerprint_diff(a.get(k), b.get(k), f"{prefix}{k}.")]
+    return [prefix.rstrip(".") or "fingerprint"] if a != b else []

@@ -9,8 +9,10 @@ vectors are ``(x, y, z)`` in voxels; shapes and boxes of arrays are ``(z, y, x)`
 from __future__ import annotations
 
 import dataclasses
+import math
 import types
 import typing
+import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
@@ -22,6 +24,9 @@ Interpolation = Literal["nearest", "trilinear", "tricubic"]
 Method = Literal["fagn", "icgn"]
 SeedStrategy = Literal["rigid", "wavefront", "coarse", "fft"]
 Vec3 = tuple[float, float, float]
+
+MAX_SAMPLES = 1_000_000          # subvolume.n_samples cap: memory and time per point grow with it
+MAX_ITERATIONS = 255             # iteration counts are stored as uint8
 
 
 @dataclass(frozen=True)
@@ -110,12 +115,19 @@ class RunConfig:
         import yaml
 
         with open(path) as fh:
-            return cls.from_dict(yaml.safe_load(fh))
+            try:
+                data = yaml.safe_load(fh)
+            except yaml.YAMLError as exc:
+                raise ValueError(f"{path}: not valid YAML: {' '.join(str(exc).split())}") from None
+        return cls.from_dict(data)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> RunConfig:
-        """Build from nested plain data. Unknown keys and invalid choices raise ``ValueError``."""
-        return _build(cls, data, "config")
+        """Build from nested plain data and :meth:`validate` it.
+
+        Unknown or missing keys, invalid choices and out-of-range values raise ``ValueError``.
+        """
+        return _build(cls, data, "config").validate()
 
     @classmethod
     def from_ccpi(cls, path: str | Path) -> RunConfig:
@@ -133,6 +145,81 @@ class RunConfig:
     def to_dict(self) -> dict[str, Any]:
         return _plain(dataclasses.asdict(self))
 
+    def validate(self) -> RunConfig:
+        """Check ranges and choices; returns ``self``. The ``ValueError`` names the first offending key.
+
+        Settings that are read but not used yet warn when they differ from their default.
+        """
+        vol, sub, srch, seed, clu = self.volumes, self.subvolume, self.search, self.seeding, self.cluster
+        fin = math.isfinite
+        checks: list[tuple[str, Any, bool, str]] = [
+            ("volumes.raw_header_bytes", vol.raw_header_bytes, vol.raw_header_bytes >= 0, ">= 0"),
+            ("volumes.prefilter_sigma", vol.prefilter_sigma, fin(vol.prefilter_sigma) and vol.prefilter_sigma >= 0,
+             ">= 0 (0 = off)"),
+            ("subvolume.size", sub.size, fin(sub.size) and sub.size > 0, "finite and > 0 voxels"),
+            ("subvolume.n_samples", sub.n_samples, 1 <= sub.n_samples <= MAX_SAMPLES,
+             f"between 1 and {MAX_SAMPLES:,} (CCPi's examples use a few thousand)"),
+            ("subvolume.aspect", sub.aspect, all(fin(a) and a > 0 for a in sub.aspect), "three values > 0"),
+            ("subvolume.seed", sub.seed, sub.seed >= 0, ">= 0"),
+            ("search.disp_max", srch.disp_max, fin(srch.disp_max) and srch.disp_max > 0, "finite and > 0 voxels"),
+            ("search.rigid_trans", srch.rigid_trans, all(fin(v) for v in srch.rigid_trans), "three finite values"),
+            ("search.basin_radius", srch.basin_radius, fin(srch.basin_radius) and srch.basin_radius >= 0, ">= 0 (0 = off)"),
+            ("search.max_iterations", srch.max_iterations, 1 <= srch.max_iterations <= MAX_ITERATIONS,
+             f"between 1 and {MAX_ITERATIONS}"),
+            ("search.obj_tol", srch.obj_tol, fin(srch.obj_tol) and srch.obj_tol >= 0, "finite and >= 0"),
+            ("search.disp_tol", srch.disp_tol, fin(srch.disp_tol) and srch.disp_tol >= 0, "finite and >= 0"),
+            ("seeding.start_point", seed.start_point, seed.start_point is None or all(fin(v) for v in seed.start_point),
+             "three finite values, or null for the first point"),
+            ("seeding.n_neighbours", seed.n_neighbours, seed.n_neighbours >= 1, ">= 1"),
+            ("seeding.shell_width", seed.shell_width, seed.shell_width is None or (fin(seed.shell_width) and seed.shell_width > 0),
+             "> 0, or null for the median point spacing"),
+            ("seeding.coarse_stride", seed.coarse_stride, seed.coarse_stride >= 1, ">= 1"),
+            ("cluster.tile_shape", clu.tile_shape, all(n >= 1 for n in clu.tile_shape), "three sizes >= 1"),
+            ("cluster.devices", clu.devices, clu.devices is None or all(d >= 0 for d in clu.devices),
+             "device indices >= 0, or null for every visible GPU"),
+            ("cluster.gpu_memory_fraction", clu.gpu_memory_fraction,
+             fin(clu.gpu_memory_fraction) and 0 < clu.gpu_memory_fraction <= 1, "in (0, 1]"),
+            ("cluster.batch_points", clu.batch_points, clu.batch_points is None or clu.batch_points >= 1,
+             ">= 1, or null to size batches from free memory"),
+            ("cluster.prefetch_depth", clu.prefetch_depth, clu.prefetch_depth >= 1, ">= 1"),
+            ("num_points_to_process", self.num_points_to_process,
+             self.num_points_to_process is None or self.num_points_to_process >= 0, ">= 0 (0 or null = every point)"),
+            ("uncertainty_seeds", self.uncertainty_seeds, self.uncertainty_seeds >= 0, ">= 0 (0 = off)"),
+        ]
+        if vol.raw_shape_xyz is not None:
+            checks.append(("volumes.raw_shape_xyz", vol.raw_shape_xyz, all(n >= 1 for n in vol.raw_shape_xyz),
+                           "three sizes >= 1"))
+        if srch.threshold is not None:
+            t = srch.threshold
+            checks += [
+                ("search.threshold.gray_min", t.gray_min, fin(t.gray_min), "finite"),
+                ("search.threshold.gray_max", t.gray_max, fin(t.gray_max) and t.gray_max >= t.gray_min,
+                 f"finite and >= gray_min ({t.gray_min:g})"),
+                ("search.threshold.min_fraction", t.min_fraction, fin(t.min_fraction) and 0 <= t.min_fraction <= 1,
+                 "between 0 and 1"),
+            ]
+        for key, value, ok, rule in checks:
+            if not ok:
+                raise ValueError(f"config.{key}: {value!r} is out of range; it must be {rule}")
+        if vol.raw_dtype is not None:
+            import numpy as np
+
+            try:
+                np.dtype(vol.raw_dtype)
+            except TypeError:
+                raise ValueError(f"config.volumes.raw_dtype: {vol.raw_dtype!r} is not a numpy dtype (e.g. '<u2', '|u1')") from None
+        for key, value in (("search.method", srch.method), ("seeding.strategy", seed.strategy)):
+            if value in _NOT_IMPLEMENTED:
+                raise ValueError(f"config.{key}: {value!r} is not implemented yet (M5); use {_NOT_IMPLEMENTED[value]}")
+        for key, value, default in (("seeding.coarse_level", seed.coarse_level, 1),
+                                    ("seeding.repair_passes", seed.repair_passes, 1),
+                                    ("cluster.brick_dtype", clu.brick_dtype, "native"),
+                                    ("cluster.scheduler", clu.scheduler, "dynamic")):
+            if value != default:
+                warnings.warn(f"config.{key} = {value!r} is not used yet; the run behaves as with {default!r}",
+                              UserWarning, stacklevel=2)
+        return self
+
     def halo(self) -> float:
         """Brick margin around a tile's points, in voxels.
 
@@ -149,6 +236,10 @@ class RunConfig:
         else:
             extent = half * max(aspect)
         return extent + self.search.disp_max + 2.0
+
+
+_NOT_IMPLEMENTED = {"icgn": "method 'fagn'", "fft": "strategy 'wavefront', 'rigid' or 'coarse'"}
+
 
 def _plain(value: Any) -> Any:
     if isinstance(value, dict):
@@ -172,33 +263,45 @@ def _build(tp: Any, value: Any, where: str) -> Any:
         if not isinstance(value, dict):
             raise ValueError(f"{where}: expected a mapping, got {value!r}")
         hints = typing.get_type_hints(tp)
-        names = [f.name for f in dataclasses.fields(tp)]
-        unknown = sorted(set(value) - set(names))
+        fields = dataclasses.fields(tp)
+        unknown = sorted(set(value) - {f.name for f in fields})
         if unknown:
             raise ValueError(f"{where}: unknown keys {unknown}")
+        missing = [f.name for f in fields if f.name not in value
+                   and f.default is dataclasses.MISSING and f.default_factory is dataclasses.MISSING]
+        if missing:
+            raise ValueError(f"{where}: missing required key{'s' * (len(missing) > 1)} {', '.join(map(repr, missing))}")
         return tp(**{k: _build(hints[k], v, f"{where}.{k}") for k, v in value.items()})
     if origin is Literal:
-        if value not in args:
+        if isinstance(value, bool) or value not in args:
             raise ValueError(f"{where}: {value!r} is not one of {list(args)}")
-        return value
+        return args[args.index(value)]            # 6.0 -> 6
     if origin is tuple:
         if not isinstance(value, (list, tuple)):
             raise ValueError(f"{where}: expected a list, got {value!r}")
         if len(args) == 2 and args[1] is Ellipsis:
-            return tuple(_build(args[0], v, where) for v in value)
+            return tuple(_build(args[0], v, f"{where}[{i}]") for i, v in enumerate(value))
         if len(value) != len(args):
             raise ValueError(f"{where}: expected {len(args)} values, got {len(value)}")
-        return tuple(_build(a, v, where) for a, v in zip(args, value))
-    if tp is float:
-        return float(value)
-    if tp is int:
-        if isinstance(value, float) and not value.is_integer():
+        return tuple(_build(a, v, f"{where}[{i}]") for i, (a, v) in enumerate(zip(args, value)))
+    if tp in (float, int):
+        if isinstance(value, (bool, list, tuple, dict)) or value is None:
+            raise ValueError(f"{where}: expected a number, got {value!r}")
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            raise ValueError(f"{where}: expected a number, got {value!r}") from None
+        if tp is float:
+            return number
+        if not number.is_integer():
             raise ValueError(f"{where}: expected an integer, got {value!r}")
-        return int(value)
+        return int(value) if isinstance(value, int) else int(number)
     if tp is bool:
         if not isinstance(value, bool):
             raise ValueError(f"{where}: expected true/false, got {value!r}")
         return value
     if tp is str:
+        if isinstance(value, (bool, list, tuple, dict)) or value is None:
+            raise ValueError(f"{where}: expected a string, got {value!r}")
         return str(value)
     return value

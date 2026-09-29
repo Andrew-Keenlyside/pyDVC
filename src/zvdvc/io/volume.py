@@ -32,11 +32,22 @@ Sources
 Boxes that extend past the volume are edge-padded. :class:`Brick` records the
 valid part, so the solver flags points whose samples leave it as
 ``RANGE_FAIL`` instead of correlating them against padding.
+
+Every source reads bricks in the host's byte order, so a big-endian file reaches
+the engines as native data, and ``.dtype`` is that native type. Float bricks
+are checked for NaN/inf as they are read (a brick with any is an error): at open
+time the check would read the whole volume, which for 100 GB+ inputs costs as
+much as the run's own reads, while per brick it is one pass over data already in
+memory. A NaN would otherwise spread through the interpolation to every point
+whose subvolume touches it.
 """
 
 from __future__ import annotations
 
 import math
+import os
+import shutil
+import warnings
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -74,12 +85,32 @@ class VolumeSource(Protocol):
     def read_brick(self, box: Box, *, device: Device = "cuda", stream: Any = None) -> Brick: ...
 
 
-def _read_brick(array: Any, shape: tuple[int, int, int], box: Box, device: Device, stream: Any = None) -> Brick:
-    """Read ``box`` from a (z, y, x) array-like, edge-padding whatever lies outside the volume."""
+def native(dtype: Any) -> np.dtype:
+    """``dtype`` in the host's byte order."""
+    dtype = np.dtype(dtype)
+    return dtype if dtype.isnative else dtype.newbyteorder("=")
+
+
+def _check_finite(data: np.ndarray, name: str, box: Box, slab: int = 64) -> None:
+    """Raise if a float brick holds NaN or inf (checked in z-slabs to bound the temporary mask)."""
+    if data.dtype.kind != "f":
+        return
+    bad = sum(int(np.count_nonzero(~np.isfinite(data[z:z + slab]))) for z in range(0, data.shape[0], slab))
+    if bad:
+        raise ValueError(f"{name}: {bad:,} non-finite voxels (NaN/inf) in box {box}; replace them "
+                         f"(e.g. with the background level) before correlating")
+
+
+def _read_brick(array: Any, shape: tuple[int, int, int], box: Box, device: Device, stream: Any = None,
+                name: str = "volume") -> Brick:
+    """Read ``box`` from a (z, y, x) array-like in native byte order, edge-padding whatever lies outside the volume."""
     valid = box.intersect(Box((0, 0, 0), shape))
     if valid is None:
         raise ValueError(f"{box} does not overlap a volume of shape {shape}")
     part = np.asarray(array[valid.slices()])
+    if not part.dtype.isnative:
+        part = part.astype(native(part.dtype))
+    _check_finite(part, name, valid)
     pad = [(v - b, bh - vh) for b, v, vh, bh in zip(box.lo, valid.lo, valid.hi, box.hi)]
     data = np.pad(part, pad, mode="edge") if any(p != (0, 0) for p in pad) else np.ascontiguousarray(part)
     if device == "cuda":
@@ -128,19 +159,34 @@ def to_device(data: np.ndarray, *, stream: Any = None) -> Any:
 
 
 class ZarrVolume:
-    def __init__(self, uri: str, array_path: str = "0") -> None:
+    """An OME-Zarr level (or bare Zarr array). Opening checks that every chunk is stored (``check_chunks``)."""
+
+    def __init__(self, uri: str, array_path: str = "0", *, check_chunks: bool = True) -> None:
         import zarr
 
         node = zarr.open(uri, mode="r")
-        self.array = node[array_path] if isinstance(node, zarr.Group) else node
+        if isinstance(node, zarr.Group):
+            if array_path not in node or not isinstance(node[array_path], zarr.Array):
+                levels = sorted(node.array_keys())
+                raise ValueError(f"{uri}: no array (level) {array_path!r} here; available: {levels} (volumes.array_path)")
+            node = node[array_path]
+        self.array = node
         if self.array.ndim != 3:
             raise ValueError(f"{uri}: expected a 3-D (z, y, x) array, got shape {self.array.shape}")
         self.uri = uri
         self.shape: tuple[int, int, int] = tuple(int(n) for n in self.array.shape)
-        self.dtype = np.dtype(self.array.dtype)
+        self.dtype = native(self.array.dtype)
+        stored, total = (self.array.nchunks_initialized, self.array.nchunks) if check_chunks else (0, 0)
+        if stored < total:
+            # zarr leaves chunks that hold only the fill value unwritten by default, so an array from another
+            # tool (or an older zvDVC) can be complete with chunks missing; a truncated copy looks the same.
+            warnings.warn(
+                f"{uri}: only {stored} of {total} chunks are stored; missing chunks read as {self.array.fill_value}. "
+                f"Fine if those regions are empty; otherwise the copy or conversion is incomplete "
+                f"(`zvdvc convert` stores every chunk)", stacklevel=2)
 
     def read_brick(self, box: Box, *, device: Device = "cuda", stream: Any = None) -> Brick:
-        return _read_brick(self.array, self.shape, box, device, stream)
+        return _read_brick(self.array, self.shape, box, device, stream, self.uri)
 
 
 _MHD_TYPES = {
@@ -150,23 +196,40 @@ _MHD_TYPES = {
 
 
 def _read_mhd(path: Path) -> tuple[Path, tuple[int, int, int], np.dtype, int]:
-    """(data file, shape_xyz, dtype, header bytes) from a MetaImage header."""
+    """(data file, shape_xyz, dtype, header bytes) from a MetaImage header: one uncompressed, single-channel 3-D file."""
     fields: dict[str, str] = {}
     for line in path.read_text().splitlines():
         if "=" in line:
             key, value = line.split("=", 1)
             fields[key.strip()] = value.strip()
-    shape_xyz = tuple(int(v) for v in fields["DimSize"].split())
-    if len(shape_xyz) != 3:
-        raise ValueError(f"{path}: expected a 3-D image, DimSize = {fields['DimSize']}")
+    for key in ("DimSize", "ElementType", "ElementDataFile"):
+        if key not in fields:
+            raise ValueError(f"{path}: missing {key} in the MetaImage header")
+    try:
+        shape_xyz = tuple(int(v) for v in fields["DimSize"].split())
+    except ValueError:
+        raise ValueError(f"{path}: DimSize = {fields['DimSize']!r} is not a list of integers") from None
+    if len(shape_xyz) != 3 or fields.get("NDims", "3") != "3":
+        raise ValueError(f"{path}: expected a 3-D image, got NDims = {fields.get('NDims')}, DimSize = {fields['DimSize']}")
+    if fields["ElementType"] not in _MHD_TYPES:
+        raise ValueError(f"{path}: ElementType {fields['ElementType']!r} is not supported; use one of {sorted(_MHD_TYPES)}")
+    if fields.get("CompressedData", "False").lower() == "true":
+        raise ValueError(f"{path}: CompressedData = True is not supported; write the image uncompressed")
+    if fields.get("ElementNumberOfChannels", "1") != "1":
+        raise ValueError(f"{path}: ElementNumberOfChannels = {fields['ElementNumberOfChannels']}; only single-channel "
+                         f"(grey-level) images are supported")
     big = fields.get("BinaryDataByteOrderMSB", fields.get("ElementByteOrderMSB", "False")).lower() == "true"
     dtype = np.dtype(_MHD_TYPES[fields["ElementType"]]).newbyteorder(">" if big else "<")
     data_file = fields["ElementDataFile"]
-    if data_file == "LOCAL":
-        raise ValueError(f"{path}: single-file .mha-style data is not supported; use a detached .raw")
-    header = int(fields.get("HeaderSize", "0"))
+    if data_file in ("LOCAL", "LIST") or "%" in data_file:
+        raise ValueError(f"{path}: ElementDataFile = {data_file}: only one detached data file is supported "
+                         f"(not LOCAL / .mha, LIST or a file pattern)")
+    try:
+        header = int(fields.get("HeaderSize", "0"))
+    except ValueError:
+        raise ValueError(f"{path}: HeaderSize = {fields['HeaderSize']!r} is not an integer") from None
     if header < 0:
-        raise ValueError(f"{path}: HeaderSize = -1 (auto) is not supported")
+        raise ValueError(f"{path}: HeaderSize = -1 (auto) is not supported; give the header length in bytes")
     return path.parent / data_file, shape_xyz, dtype, header
 
 
@@ -188,21 +251,43 @@ class RawVolume:
             self.header_bytes = int(array.offset)
         else:
             if suffix == ".mhd":
+                mhd = path
                 path, shape_xyz, dt, header_bytes = _read_mhd(path)
+                hint = f"check DimSize, ElementType and HeaderSize in {mhd}"
             else:
                 if shape_xyz is None or dtype is None:
                     raise ValueError(f"{path}: raw volumes need raw_shape_xyz and raw_dtype")
                 dt = np.dtype(dtype)
+                hint = ("check the bit depth (vol_bit_depth / raw_dtype), the dimensions (vol_wide, vol_high, vol_tall / "
+                        "raw_shape_xyz) and the header length (vol_hdr_lngth / raw_header_bytes)")
             x, y, z = shape_xyz
+            _check_raw_size(path, (x, y, z), dt, int(header_bytes), hint)
             array = np.memmap(path, dtype=dt, mode="r", offset=header_bytes, shape=(z, y, x))
             self.header_bytes = int(header_bytes)
         self.path = path
-        self.array = array
+        self.array = array                   # in the file's byte order
         self.shape: tuple[int, int, int] = tuple(int(n) for n in array.shape)
-        self.dtype = np.dtype(array.dtype)
+        self.dtype = native(array.dtype)
 
     def read_brick(self, box: Box, *, device: Device = "cuda", stream: Any = None) -> Brick:
-        return _read_brick(self.array, self.shape, box, device, stream)
+        return _read_brick(self.array, self.shape, box, device, stream, str(self.path))
+
+
+def _check_raw_size(path: Path, shape_xyz: tuple[int, int, int], dtype: np.dtype, header: int, hint: str) -> None:
+    """The file must hold exactly ``header`` bytes plus the voxels: smaller is truncated, larger is misdescribed."""
+    if not path.is_file():
+        raise FileNotFoundError(f"{path}: volume file not found")
+    size = path.stat().st_size
+    data = int(np.prod(shape_xyz, dtype=np.int64)) * dtype.itemsize
+    expected = header + data
+    if size == expected:
+        return
+    dims = "x".join(str(n) for n in shape_xyz)
+    if size < expected:
+        raise ValueError(f"{path}: file is {size:,} bytes, smaller than the {expected:,} that {dims} {dtype} voxels "
+                         f"after a {header}-byte header need (truncated?); {hint}")
+    raise ValueError(f"{path}: file is {size:,} bytes, not the {expected:,} that {dims} {dtype} voxels after a "
+                     f"{header}-byte header take (its data is {(size - header) / max(data, 1):.3g} times as large); {hint}")
 
 
 def is_zarr_uri(uri: str | Path) -> bool:
@@ -310,15 +395,25 @@ def create_ome_zarr(
     codec: Literal["zstd", "none"] = "zstd",
     level: int = 3,
     name: str | None = None,
+    overwrite: bool = False,
 ) -> Any:
     """Create an OME-Zarr v0.5 (Zarr v3) image with one sharded level ``"0"``; returns that array.
 
     Shards are rounded up to a multiple of the chunk and never exceed what the
-    volume needs, so small test volumes get one shard.
+    volume needs, so small test volumes get one shard. Every chunk is stored,
+    even an empty one, so a missing chunk means an incomplete array
+    (:class:`ZarrVolume` refuses those). An existing ``path`` is an error unless
+    ``overwrite``, and even then only an existing Zarr store is replaced.
     """
     import zarr
     from zarr.codecs import ZstdCodec
 
+    path = Path(path)
+    if path.exists():
+        if not overwrite:
+            raise FileExistsError(f"{path} already exists; remove it or pass overwrite=True (--overwrite)")
+        if not _is_zarr_store(path):
+            raise FileExistsError(f"{path} exists and is not a Zarr store; refusing to overwrite it")
     chunks = tuple(min(chunk, n) for n in shape_zyx)
     shards = tuple(c * math.ceil(min(shard, n) / c) for c, n in zip(chunks, shape_zyx))
     group = zarr.open_group(str(path), mode="w", zarr_format=3)
@@ -331,6 +426,7 @@ def create_ome_zarr(
         compressors=ZstdCodec(level=level) if codec == "zstd" else None,
         dimension_names=("z", "y", "x"),
         fill_value=0,
+        config={"write_empty_chunks": True},
     )
     group.attrs["ome"] = {
         "version": "0.5",
@@ -343,6 +439,10 @@ def create_ome_zarr(
         ],
     }
     return array
+
+
+def _is_zarr_store(path: Path) -> bool:
+    return path.is_dir() and any((path / f).exists() for f in ("zarr.json", ".zgroup", ".zarray"))
 
 
 def write_raw(source: VolumeSource, path: str | Path, *, slab: int = 64) -> None:
@@ -366,14 +466,25 @@ def convert_to_ome_zarr(
     shape_xyz: tuple[int, int, int] | None = None,
     dtype: str | None = None,
     header_bytes: int = 0,
+    overwrite: bool = False,
 ) -> None:
     """One-off conversion of raw/mhd/npy/tiff input to sharded OME-Zarr v3.
 
     Streams slabs of ``shard`` slices so memory stays bounded for 100 GB+ inputs
     (each slab is written as whole shards). ``.raw`` needs ``shape_xyz`` and
     ``dtype``; ``.tif``/``.tiff`` stacks need ``tifffile`` (``zvdvc[tiff]``).
+    The output is written next to ``dst`` and renamed into place at the end, so
+    an interrupted conversion leaves no partial ``dst``. An existing ``dst`` is an
+    error unless ``overwrite``; ``dst`` may not be ``src`` or contain it, or lie inside it.
     """
-    src = Path(src)
+    src, dst = Path(src), Path(dst)
+    s, d = src.resolve(), dst.resolve()
+    if s == d or s in d.parents or d in s.parents:
+        raise ValueError(f"convert: the output {dst} would overwrite the input {src}; choose another output path")
+    if dst.exists() and not overwrite:
+        raise FileExistsError(f"{dst} already exists; remove it or pass overwrite=True (--overwrite)")
+    if dst.exists() and not _is_zarr_store(dst):
+        raise FileExistsError(f"{dst} exists and is not a Zarr store; refusing to overwrite it")
     if src.suffix.lower() in (".tif", ".tiff"):
         try:
             import tifffile
@@ -384,14 +495,28 @@ def convert_to_ome_zarr(
             raise ValueError(f"{src}: expected a 3-D stack, got shape {array.shape}")
         source_shape, source_dtype = tuple(array.shape), np.dtype(array.dtype)
     elif is_zarr_uri(src):
-        vol = ZarrVolume(str(src))
+        vol = ZarrVolume(str(src), check_chunks=False)       # missing chunks convert to the fill value
         array, source_shape, source_dtype = vol.array, vol.shape, vol.dtype
     else:
         vol = RawVolume(src, shape_xyz=shape_xyz, dtype=dtype, header_bytes=header_bytes)
         array, source_shape, source_dtype = vol.array, vol.shape, vol.dtype
-    out_dtype = source_dtype.newbyteorder("=") if source_dtype.byteorder not in ("=", "|") else source_dtype
-    out = create_ome_zarr(dst, source_shape, out_dtype, chunk=chunk, shard=shard, codec=codec, level=level)
-    slab = int(out.shards[0])
-    for z in range(0, source_shape[0], slab):
-        z1 = min(z + slab, source_shape[0])
-        out[z:z1] = np.asarray(array[z:z1]).astype(out_dtype, copy=False)
+    out_dtype = native(source_dtype)
+    tmp = d.parent / f".{d.name}.tmp-{os.getpid()}"
+    if tmp.exists():
+        shutil.rmtree(tmp)
+    try:
+        out = create_ome_zarr(tmp, source_shape, out_dtype, chunk=chunk, shard=shard, codec=codec, level=level, name=d.name)
+        slab = int(out.shards[0])
+        for z in range(0, source_shape[0], slab):
+            z1 = min(z + slab, source_shape[0])
+            out[z:z1] = np.asarray(array[z:z1]).astype(out_dtype, copy=False)
+        if dst.exists():                                 # overwrite: move the old store aside only once the new one is complete
+            old = d.parent / f".{d.name}.old-{os.getpid()}"
+            os.replace(d, old)
+            os.replace(tmp, d)
+            shutil.rmtree(old)
+        else:
+            os.replace(tmp, d)
+    finally:
+        if tmp.exists():
+            shutil.rmtree(tmp)

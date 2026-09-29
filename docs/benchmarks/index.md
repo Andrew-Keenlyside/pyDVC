@@ -52,6 +52,7 @@ CCPi DVC is always version 22.0.0 (see {ref}`below <ccpi-version>`).
 | Tiled against in-memory, case M | cloud VM | in-memory solve | bit-identical parameters and statuses on 1 500 random points; bytes read equal the brick boxes (5.04 GB) | {doc}`2026-09-25-M2-M3-cpu` |
 | Case A twin | cloud VM | ground truth; CCPi 22.0.0 | vs truth median 0.0072 (CCPi 0.0072); vs CCPi median 0.0097, p95 0.0175, status agreement 97.8 % (all disagreements at the grid's edge) | {doc}`2026-09-25-M4-case-A-twin` |
 | **Case A, real data**, interior points | `msm12` | CCPi 22.0.0, iDVC mode | median \|Δu\| 0.0512, p95 0.152, status agreement 100 %, mean Δu ≤ 0.003 per axis. Original Q1: marginal fail on the median (by 0.0012). Revised Q1: pass | {doc}`2026-09-26-case-A-real` |
+| **Direct comparison with iDVC's engine**, case A | `msm12` | CCPi 22.0.0 run as iDVC runs it; CCPi rerun; CCPi rebuilt from source | iDVC's settings (sphere): zvDVC vs CCPi median 0.0511, CCPi vs itself 0.0513 (CCPi re-samples every sphere from the clock, so it cannot reproduce itself). Same sample points (cube): median 0.0010; both run to convergence: 2.1e-5, the order of CCPi release vs its own rebuild (1.7e-5). Status agreement 100 % | {doc}`2026-09-29-idvc-comparison` |
 | Error floor on the case A scan (sphere 80, 8 000 samples) | `msm12` | known shifts of the real image; repeat solves | interpolation bias up to ±0.03 voxel; noise 0.005; choice of sample points 0.032 (falls as 1/√n); prefilter σ = 1 cuts the bias to 0.0005 | {doc}`2026-09-26-error-floor-case-A` |
 | CCPi `ccpi-dvc` 25.0.0 | cloud VM | ground truth | tricubic path broken: ~3 voxel errors on case S, 3.1 voxels on the case A twin, every point reported GOOD | {doc}`2026-09-25-M0-M1-case-S`, {doc}`2026-09-25-M4-case-A-twin` |
 
@@ -175,6 +176,7 @@ on a fresh machine.
 ```{toctree}
 :maxdepth: 1
 
+2026-09-29-idvc-comparison
 2026-09-26-case-A-real
 2026-09-26-error-floor-case-A
 2026-09-25-M4-case-A-twin

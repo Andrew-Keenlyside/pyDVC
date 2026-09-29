@@ -4,7 +4,8 @@ For each batch (following ``Search::process_point``):
 
 1. Sample the reference brick at ``centre + template`` to get ``f`` (B, M)
    and its stats. This happens once per point; IC-GN also keeps ``grad f``.
-2. Optional threshold test (``subvol_thresh``) -> ``THRESH_FAIL``.
+2. Optional threshold test (``subvol_thresh``) -> ``THRESH_FAIL``; then a
+   reference with no texture -> ``SINGULAR``.
 3. ``params <- [seed, 0, ...]``. As in CCPi, only the translation is seeded;
    rotations and strains start at zero.
 4. Optional translation grid search (``basin_radius > 0``), from
@@ -46,6 +47,11 @@ Differences from CCPi (also listed in docs/ARCHITECTURE.md)
       scaled system has a pivot below the precision's threshold
       (:func:`zvdvc.solver.engines.singular_pivot`), or whose target has no
       texture (``FEATURELESS``), is ``SINGULAR``.
+    * Texture: a point whose reference samples are constant (air, zero
+      padding; :func:`zvdvc.solver.engines.textureless`) is ``SINGULAR``
+      before any iteration, for every objective; so is one whose final target
+      samples are constant. A point whose parameters or final objective are
+      not finite is ``SINGULAR``, never ``GOOD``.
     * Stencils: any reference or target sample whose interpolation stencil
       leaves the brick's valid region makes the point ``RANGE_FAIL`` (CCPi's
       implicit range test, made explicit).
@@ -67,7 +73,7 @@ from zvdvc.config import SearchSpec
 from zvdvc.geometry.templates import Template
 from zvdvc.io.volume import Brick
 from zvdvc.kernels.objective import objective, reference_terms
-from zvdvc.solver.engines import BatchState, make_engine
+from zvdvc.solver.engines import BatchState, make_engine, textureless
 from zvdvc.status import PointStatus
 
 Backend = Literal["numpy", "numpy32", "cupy", "fused", "emulated", "cpu"]
@@ -146,6 +152,7 @@ def _solve_chunk(eng: Any, ref: Any, deformed: Any, centres: Any, seeds: Any, of
         th = search.threshold
         frac = ((f >= th.gray_min) & (f <= th.gray_max)).mean(axis=1)
         st.status[(st.status == int(PointStatus.GOOD)) & (frac < th.min_fraction)] = int(PointStatus.THRESH_FAIL)
+    st.status[(st.status == int(PointStatus.GOOD)) & textureless(xp, f, eng.dtype)] = int(PointStatus.SINGULAR)
     q, shift = reference_terms(f, search.objective)
     if search.basin_radius > 0:
         from zvdvc.solver.coarse import translation_grid_search
@@ -168,10 +175,14 @@ def _solve_chunk(eng: Any, ref: Any, deformed: Any, centres: Any, seeds: Any, of
 
     if bool(active.any()):
         st.status[active] = int(PointStatus.CONVG_FAIL if search.report_convg_fail else PointStatus.GOOD)
+    solved = (st.status == int(PointStatus.GOOD)) | (st.status == int(PointStatus.CONVG_FAIL))
+    st.status[solved & ~xp.isfinite(st.params).all(axis=1)] = int(PointStatus.SINGULAR)
     final = xp.flatnonzero((st.status == int(PointStatus.GOOD)) | (st.status == int(PointStatus.CONVG_FAIL)))
     if final.size:
         with nvtx_range("final objective"):
             g, inside = eng.sample(deformed, centres[final], st.params[final], offsets, search)
         st.objmin[final] = objective(f[final], g, search.objective).astype(eng.dtype)
         st.status[final[~inside]] = int(PointStatus.RANGE_FAIL)
+        broken = ~xp.isfinite(st.objmin[final]) | textureless(xp, g, eng.dtype)
+        st.status[final[inside & broken]] = int(PointStatus.SINGULAR)
     return st

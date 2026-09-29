@@ -45,6 +45,7 @@ sinusoid {'amplitude': 1.0, 'wavelength': 96.0, 'axis': 0, 'component': 0}
 (`rigid`, `affine`, `sinusoid`, `inclusion`), scaled to the volume. You can
 also pass your own {py:class}`~zvdvc.synth.phantoms.DisplacementField`, or
 your own points with `points_xyz=`. `noise_sigma` is a fraction of full scale.
+An existing case in the output folder is refused unless `overwrite=True`.
 
 ## 2. Build a run configuration
 
@@ -100,8 +101,11 @@ ValueError: config.search.dof: 7 is not one of [3, 6, 12]
 2
 ```
 
-* `from_dict` validates as it builds: unknown keys and invalid choices raise
-  `ValueError`, naming the field.
+* `from_dict` and `from_yaml` validate as they build: unknown or missing
+  keys, invalid choices, out-of-range values and options not implemented yet
+  (`method: icgn`, `strategy: fft`) raise `ValueError`, naming the field.
+  A `RunConfig(...)` built directly, like `cfg2`, is checked only when you
+  call `cfg2.validate()` (which returns it).
 * `RunConfig.from_ccpi("dvc_input.txt")` reads a CCPi / iDVC `dvc_in` file
   (see {doc}`/tutorials/idvc_example`).
 * To change a nested setting, replace the inner dataclass too:
@@ -149,11 +153,18 @@ repair: [M5] coordinator.repair - see docs/MVP_PLAN.md
   `"numpy"`; default `fused` on a GPU, else `cpu` with numba, else `numpy`).
 * `run` also takes `devices=`, `cpu_workers=`, `max_tiles=`, and `tile_ids=`
   (solve these tiles only). It starts one worker process per GPU and returns
-  one {py:class}`~zvdvc.pipeline.worker.WorkerStats` per worker, with tiles
-  solved and skipped, points, bytes read, compute and I/O-wait seconds, and
-  status counts. Here `seed` had already written the only tile.
+  a list of {py:class}`~zvdvc.pipeline.worker.WorkerStats`, one per worker,
+  with tiles solved (`tiles`), written (`tiles_written`) and skipped
+  (`tiles_skipped`), points, bytes read, compute and I/O-wait seconds, and
+  status counts. The list's `missing` attribute holds this node's tiles still
+  unwritten; the CLI exits with status 3 when it is not empty. Here `seed` had
+  already written the only tile.
+* `seed` and `run` raise `ValueError` if the config differs from the one
+  `prepare` planned with in anything that changes results, or if the volumes
+  or points changed ({doc}`/spec/results_store`, "Run fingerprint").
 * `finalize` returns a `RunSummary` and writes `results.stat` (and, with
-  `export_disp=True`, `results.disp`) in the workdir.
+  `export_disp=True`, `results.disp`) in the workdir. It raises `ValueError`
+  while cells are unwritten, unless `allow_partial=True`.
 
 ## 4. Solve small problems in memory
 
@@ -291,6 +302,8 @@ n	x	y	z	status	objmin	u	v	w
 
 (`data/sin96/inmem.disp`.) Statuses are written as CCPi codes: zvDVC's own
 codes below −3 become `NOT_SEARCHED` (−3), so iDVC reads the file correctly.
+Points that are not `GOOD` are written with `u v w = 0` and a finite `objmin`,
+as CCPi writes them; the `Results`, `.npz` and store keep the raw values.
 
 ## 7. Strain from Python
 

@@ -72,11 +72,13 @@ The per-point pipeline, as in
 1. Sample the reference brick at $\mathbf{c} + \mathbf{d}_m$ to get $f$
    (once per point). A point whose reference stencil leaves the brick's valid
    region is `RANGE_FAIL`.
-2. Optional threshold test (`search.threshold`) → `THRESH_FAIL`.
+2. Optional threshold test (`search.threshold`) → `THRESH_FAIL`; then a
+   reference with no texture → `SINGULAR`.
 3. $\mathbf{p} \leftarrow (\text{seed}, 0, \dots, 0)$.
 4. Optional translation grid search (`search.basin_radius > 0`).
 5. Up to `search.max_iterations` Gauss–Newton steps on the points still active.
-6. Exact final objective at the final parameters, and the status.
+6. Exact final objective at the final parameters, and the status. Non-finite
+   parameters or objective, or a target with no texture, → `SINGULAR`.
 
 ---
 
@@ -324,10 +326,17 @@ pass) and a batched Cholesky solve:
    reference), makes the point `SINGULAR`.
 3. A point whose target has no texture,
    $\sum\lVert\nabla g\rVert^2 \le 10^{-12}\sum g^2$, is also `SINGULAR`.
+4. Before any iteration, for every objective, a point whose reference
+   subvolume has no texture, $\max f - \min f \le \tau\max\lvert f\rvert$
+   ($\tau = 10^{-5}$ on the float32 engines, $10^{-12}$ on the float64
+   reference), is `SINGULAR` and is not searched (zero padding, air). The
+   final target samples get the same test, and a point whose parameters or
+   final objective are not finite is `SINGULAR` too, so a non-finite result
+   is never reported `GOOD`.
 
 **IC-GN (`search.method: icgn`).** Inverse-compositional Gauss–Newton is
-**not implemented**. The configuration accepts `icgn`, but solving raises
-`NotImplementedError` (roadmap milestone M5). Its warp helpers
+**not implemented**. Loading a configuration with `icgn` raises `ValueError`
+(roadmap milestone M5). Its warp helpers
 (`warp_jacobian_at_identity`, `compose_inverse`) are stubs.
 
 **Engines.** The loop is written once; an engine supplies sampling, the
@@ -372,7 +381,8 @@ $\lVert\mathbf{t} - \text{seed}\rVert_\infty > \texttt{disp\_max}$ is
 
 The final objective is re-evaluated at the final parameters for `GOOD` and
 `CONVG_FAIL` points; if any sample then leaves the valid region the point
-becomes `RANGE_FAIL`.
+becomes `RANGE_FAIL`, and if the objective is not finite or the target
+samples have no texture it becomes `SINGULAR`.
 
 ### Threshold test
 
@@ -415,7 +425,7 @@ replacement:
 | `rigid` | implemented | Every point starts at `search.rigid_trans`. Fully parallel; enough for small, smooth deformation or after rigid pre-alignment. |
 | `wavefront` (default) | implemented | CCPi parity. Points are bucketed into distance shells from the start point and solved shell by shell, each shell as one batch seeded from `GOOD` neighbours in earlier shells. Needs both whole volumes in host memory. |
 | `coarse` | implemented (MVP form) | Solve a sub-grid first (wavefront order), interpolate its field to seed every point, then solve all tiles independently. The MVP solves the sub-grid at full resolution with both whole volumes in host memory. |
-| `fft` | not implemented (M5) | FFT cross-correlation seeds, path-independent. `zvdvc seed` raises `NotImplementedError`. |
+| `fft` | not implemented (M5) | FFT cross-correlation seeds, path-independent. Loading a configuration with `fft` raises `ValueError`. |
 
 **Wavefront details.** The start point is `seeding.start_point`, or the first
 point of the cloud when unset (CCPi's default; from a zarr-vectors store, the
@@ -445,14 +455,18 @@ $2 \times \text{voxels} \times \text{bytes per voxel}$ exceeds 80 % of the
 available host memory, and suggests `rigid`.
 
 **Tile seeds.** In the tiled run each point's seed comes from `seeds.npz`
-when it exists (coarse), else `rigid_trans`. With `wavefront`, the seed stage
-itself solves every point and writes the results, so `zvdvc run` finds every
-tile written and skips it.
+with `coarse`, else `rigid_trans`; a `seeds.npz` left in the work directory
+does not seed another strategy's run. `zvdvc run` enforces the strategy: with
+`coarse` it refuses to start until `zvdvc seed` has written `seeds.npz`, or
+when `seeds.npz` changed after `seed` planned the tiles from it. With
+`wavefront`, the seed stage itself solves every point and writes the results,
+so `zvdvc run` refuses to start unless every cell is written, and then finds
+every tile written and skips it.
 
 ### Repair
 
-**Not implemented.** `zvdvc repair` raises `NotImplementedError` (M5), and
-`seeding.repair_passes` is not read. The planned pass
+**Not implemented.** `zvdvc repair` stops with a "not implemented (M5)"
+error, and `seeding.repair_passes` is not used (a value other than 1 warns). The planned pass
 (`repair_candidates`, a stub) finds failed points with at least 3 `GOOD`
 neighbours, re-seeds them from the neighbours' median displacement and solves
 them again. {doc}`/ARCHITECTURE` §6 describes the design.
@@ -476,13 +490,9 @@ aggregate. The effect it measures (~0.03 voxel per axis at 8 000 samples on
 the iDVC example, falling as $1/\sqrt{n}$) is described in the
 [error-floor study](../benchmarks/2026-09-26-error-floor-case-A.md).
 
-```{note}
-The tiled worker (`zvdvc run`) and the in-memory runner (`zvdvc solve`,
-`.npz` output) both compute and keep `displacement_sd`. With
-`seeding.strategy: wavefront`, `zvdvc seed` computes it but writes results to
-the store without it, so the store's `displacement_sd` is NaN. Use `rigid` or
-`coarse` seeding, or `zvdvc solve`, when you need it.
-```
+The tiled worker (`zvdvc run`), the wavefront seed stage (`zvdvc seed`) and
+the in-memory runner (`zvdvc solve`, `.npz` output) all compute and keep
+`displacement_sd`.
 
 ### Strain
 

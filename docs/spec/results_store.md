@@ -33,6 +33,12 @@ Template digest
 : `Template.digest()`, a 16-character hash of the sample offsets
   ({doc}`method`).
 
+Run fingerprint
+: What a store's values depend on: the result-affecting settings, the
+  identity of both volumes and a digest of the points
+  ({py:func}`zvdvc.pipeline.coordinator.fingerprint`). Recorded when the store
+  is allocated.
+
 ---
 
 ## Introduction
@@ -116,6 +122,7 @@ attributes:
 | `template_digest` | string or null | digest of the sample template the results were computed with |
 | `prefilter_sigma` | float | `volumes.prefilter_sigma` of the run |
 | `optional_attributes` | list of strings | optional attributes this store has (e.g. `["displacement_sd"]`) |
+| `fingerprint` | mapping or null | the run fingerprint (below); null or absent in stores written before it was recorded |
 
 A store written before the project was renamed from pyDVC carries the same
 object under the key `pydvc_results`; `ResultStore` still reads it. A store
@@ -132,11 +139,35 @@ when:
 * the store's `template_digest` differs from the run's template (the
   subvolume settings, or zvDVC's template construction, changed); a store with
   no digest only gives a warning, since the check cannot be made;
-* the store's `prefilter_sigma` differs from `volumes.prefilter_sigma`.
+* the store's `prefilter_sigma` differs from `volumes.prefilter_sigma`;
+* the store's run fingerprint differs from the run's (below). A store with
+  no fingerprint only gives a warning.
 
 Each worker repeats the template and prefilter checks when it opens the
-store. `plan.json` also records the template digest, the config and the
-package versions (including zarr-vectors).
+store. `plan.json` also records the fingerprint, the template digest, the
+config and the package versions (including zarr-vectors). `zvdvc seed` and
+`zvdvc run` compare the config with the one in `plan.json` and refuse
+(`ValueError`, naming the differing keys) when a result-affecting setting,
+the `points` or `output` path, or a volume's identity differs, or when the
+point file changed after `plan` imported it. A `plan.json` with no
+fingerprint only gives a warning.
+
+#### Run fingerprint
+
+`fingerprint` holds three parts:
+
+| part | contents |
+|---|---|
+| `settings` | every setting that changes results: all of `volumes` except the two paths, `subvolume`, `search`, `seeding` except `repair_passes`, and `num_points_to_process`. Not `cluster`, `workdir`, `uncertainty_seeds` or the paths of the points and output. |
+| `volumes` | per volume: the resolved path, shape and dtype; for a raw, `.mhd` or `.npy` file, the data file's resolved path, size and modification time (and a digest of a `.mhd` header); for OME-Zarr, a digest of the array's `zarr.json` |
+| `points` | the point count and a digest of the ids and positions, in id order |
+
+Because the resolved path is part of it, moving or copying the volumes, or
+running from another working directory with relative paths, changes the
+fingerprint; so does rewriting or touching a raw file (its size or
+modification time). `plan` and `run` then refuse to resume into the old
+store. Remove the store, or choose a new `output` (and `workdir`), to start
+afresh.
 
 ### Three-phase write
 
@@ -172,9 +203,9 @@ written last, a cell interrupted mid-write is missing from at least the
 * A tile that raises is requeued once, then recorded as failed.
 * After `zvdvc run`, tiles of this node still not written are listed in
   `<workdir>/failed_tiles.json` (with the errors) and in
-  `<workdir>/run_stats.json` (`missing_tiles`); resubmitting `zvdvc run`
-  solves only those. On a multi-node run the file names carry a
-  `.node<rank>` suffix.
+  `<workdir>/run_stats.json` (`missing_tiles`), and `zvdvc run` exits with
+  status 3; resubmitting `zvdvc run` solves only those. On a multi-node run
+  the file names carry a `.node<rank>` suffix.
 * A crash loses at most the tiles a worker had taken: the one being solved and
   up to `prefetch_depth` prefetched. In a test, a `kill -9` of one of two
   workers left 4 of 8 tiles for the resubmitted job, which then wrote a
@@ -183,8 +214,14 @@ written last, a cell interrupted mid-write is missing from at least the
 ### `zvdvc finalize`
 
 ```bash
-zvdvc finalize CONFIG [--disp] [--pyramid]
+zvdvc finalize CONFIG [--disp] [--pyramid] [--allow-partial]
 ```
+
+`finalize` refuses (exit 2) while any cell of the point store is unwritten:
+run `zvdvc run` again first. With `--allow-partial` it goes ahead and counts
+and exports the points of unwritten cells as `NOT_SEARCHED`, with a warning.
+A later `zvdvc run` reopens a partially finalised store for writing, so the
+missing tiles can still be solved and `finalize` run again.
 
 1. Reads every written cell (`read_all`) and finalises the store (above).
 2. Writes `<workdir>/results.stat`.
@@ -197,8 +234,10 @@ zvdvc finalize CONFIG [--disp] [--pyramid]
 **`.disp`** (`zvdvc.io.ccpi.write_disp`): tab-separated, header
 `n x y z status objmin u v w`, one row per point, numbers in `%.9g`. Status
 codes below −3 (zvDVC-only) are written as −3, `NOT_SEARCHED`
-({doc}`status_codes`). Displacements and `objmin` are written as stored (a
-NaN `objmin` prints as `nan`). iDVC and CCPi's `strain` program read this
+({doc}`status_codes`). Every `.disp` writer follows one policy, CCPi's for
+failed points: a point that is not `GOOD` gets `u v w = 0`, and a non-finite
+`objmin` is written as 0. The raw values stay in the results store (and the
+`zvdvc solve` `.npz`). iDVC and CCPi's `strain` program read this
 format. The `zvdvc-dvc` drop-in writes a stricter, byte-for-byte CCPi layout
 ({doc}`ccpi_compat`).
 
@@ -207,10 +246,15 @@ layout:
 
 ```text
 zvdvc run summary
-points	27
-seconds	1.111
-points_per_second	24.302
-status GOOD	27
+points	125
+seconds	0.114
+points_per_second	1096.523
+status GOOD	125
+
+number successful = 125	(100.000%)
+number range fail = 0	(0.000%)
+number convg fail = 0	(0.000%)
+number not searched = 0	(0.000%)
 
 ### config
 volumes:
@@ -219,7 +263,10 @@ volumes:
 
 One `status <NAME>\t<count>` line per status present, with zvDVC's names
 (`GOOD`, `RANGE_FAIL`, `CONVG_FAIL`, `NOT_SEARCHED`, `THRESH_FAIL`,
-`SINGULAR`), then the full configuration as YAML. `seconds` comes from
+`SINGULAR`); then CCPi-style `number ... = n (p%)` counts of CCPi's four
+codes, mapped as the `.disp` maps them (`THRESH_FAIL` and `SINGULAR` count as
+`not searched`); then the full configuration as YAML. This is still not the
+layout iDVC parses; the `zvdvc-dvc` drop-in writes that one. `seconds` comes from
 `<workdir>/run_stats.json`.
 
 ### Reading results

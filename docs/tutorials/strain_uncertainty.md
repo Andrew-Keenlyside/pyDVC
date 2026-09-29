@@ -69,14 +69,9 @@ zvdvc solve data/strain128/config.yaml --backend fused --quiet
 `results.stat`; `--disp` adds a `.disp`. Its `--backend` defaults to `numpy`,
 the slow float64 reference, so pass `fused` or `cpu`.
 
-```{warning}
-In the tiled pipeline, `displacement_sd` is computed by `zvdvc run`, so it
-reaches the results store with `seeding.strategy` `rigid` or `coarse`. With
-`wavefront`, `zvdvc seed` solves every point and writes the results, but
-`displacement_sd` is not among the attributes it writes: the store's
-`displacement_sd` stays NaN. Until that changes, use `zvdvc solve` (as here)
-or a `rigid` run when you want the uncertainty from a wavefront-style case.
-```
+In the tiled pipeline, `displacement_sd` reaches the results store with
+every seeding strategy: `zvdvc run` computes it for `rigid` and `coarse`, and
+`zvdvc seed` for `wavefront`, where it solves every point.
 
 ## 3. Compute strain
 
