@@ -38,6 +38,11 @@ The benchmark and check-suite modules. Most are run as ``python -m zvdvc.bench.<
 
 .. automodule:: zvdvc.bench.metrics
 
+``zvdvc.bench.gds``
+--------------------
+
+.. automodule:: zvdvc.bench.gds
+
 ``zvdvc.bench.kernel``
 ----------------------
 

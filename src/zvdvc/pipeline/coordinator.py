@@ -77,11 +77,11 @@ def _file_digest(path: str | Path) -> str:
 
 
 def result_settings(cfg: RunConfig) -> dict[str, Any]:
-    """The settings that change results: all but the volume, points and output paths, ``cluster``,
-    ``workdir``, ``uncertainty_seeds`` and ``seeding.repair_passes``."""
+    """The settings that change results: all but the volume, points and output paths, ``volumes.gpu_io``,
+    ``cluster``, ``workdir``, ``uncertainty_seeds`` and ``seeding.repair_passes``."""
     d = cfg.to_dict()
     return {
-        "volumes": {k: v for k, v in d["volumes"].items() if k not in ("reference", "deformed")},
+        "volumes": {k: v for k, v in d["volumes"].items() if k not in ("reference", "deformed", "gpu_io")},
         "subvolume": d["subvolume"],
         "search": d["search"],
         "seeding": {k: v for k, v in d["seeding"].items() if k != "repair_passes"},

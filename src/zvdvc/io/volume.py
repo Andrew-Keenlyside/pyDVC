@@ -65,6 +65,7 @@ class Brick:
     data: Any       # (z, y, x) array, numpy or cupy, native dtype
     box: Box        # the box that was asked for
     valid: Box      # the part of ``box`` inside the volume
+    io: str = "host"   # how it reached the device: "host" (host decode, one copy up) or "kvikio" (zvdvc.io.gds)
 
     @property
     def origin_xyz(self) -> tuple[float, float, float]:
@@ -102,11 +103,16 @@ def _check_finite(data: np.ndarray, name: str, box: Box, slab: int = 64) -> None
 
 
 def _read_brick(array: Any, shape: tuple[int, int, int], box: Box, device: Device, stream: Any = None,
-                name: str = "volume") -> Brick:
-    """Read ``box`` from a (z, y, x) array-like in native byte order, edge-padding whatever lies outside the volume."""
+                name: str = "volume", reader: Any = None) -> Brick:
+    """Read ``box`` from a (z, y, x) array-like in native byte order, edge-padding whatever lies outside the volume.
+
+    With a device ``reader`` (:mod:`zvdvc.io.gds`) a ``device="cuda"`` read goes straight to GPU memory.
+    """
     valid = box.intersect(Box((0, 0, 0), shape))
     if valid is None:
         raise ValueError(f"{box} does not overlap a volume of shape {shape}")
+    if device == "cuda" and reader is not None:
+        return _read_brick_on_device(reader, native(array.dtype), box, valid, stream, name)
     part = np.asarray(array[valid.slices()])
     if not part.dtype.isnative:
         part = part.astype(native(part.dtype))
@@ -116,6 +122,42 @@ def _read_brick(array: Any, shape: tuple[int, int, int], box: Box, device: Devic
     if device == "cuda":
         data = to_device(data, stream=stream)
     return Brick(data=data, box=box, valid=valid)
+
+
+def _read_brick_on_device(reader: Any, dtype: np.dtype, box: Box, valid: Box, stream: Any, name: str) -> Brick:
+    """The device path of :func:`_read_brick`: read into the padded brick, then edge-pad and check it on the GPU."""
+    cp = get_xp("cuda")
+    out = padded_empty(box.shape, dtype, cp)
+    at = tuple(v - b for v, b in zip(valid.lo, box.lo))
+    reader.read_into(out, valid, at, stream)
+    ctx = stream if stream is not None else cp.cuda.Stream.null
+    with ctx:
+        if dtype.kind == "f":
+            inner = out[tuple(slice(a, a + n) for a, n in zip(at, valid.shape))]
+            bad = int(cp.count_nonzero(~cp.isfinite(inner)))
+            if bad:
+                raise ValueError(f"{name}: {bad:,} non-finite voxels (NaN/inf) in box {valid}; replace them "
+                                 f"(e.g. with the background level) before correlating")
+        _edge_pad_in_place(out, at, valid.shape)
+    ctx.synchronize()
+    return Brick(data=out, box=box, valid=valid, io="kvikio")
+
+
+def _edge_pad_in_place(a: Any, at: tuple[int, ...], n: tuple[int, ...]) -> None:
+    """Fill ``a`` outside ``a[at : at + n]`` by repeating the edge voxels, axis by axis (``np.pad`` mode "edge")."""
+    for axis in range(a.ndim):
+        lo, hi = at[axis], at[axis] + n[axis]
+        idx = [slice(None)] * a.ndim
+        if lo > 0:
+            idx[axis] = slice(0, lo)
+            src = [slice(None)] * a.ndim
+            src[axis] = slice(lo, lo + 1)
+            a[tuple(idx)] = a[tuple(src)]
+        if hi < a.shape[axis]:
+            idx[axis] = slice(hi, None)
+            src = [slice(None)] * a.ndim
+            src[axis] = slice(hi - 1, hi)
+            a[tuple(idx)] = a[tuple(src)]
 
 
 # Bytes kept after a device brick's last voxel. The u8 tricubic kernel reads each stencil row as two
@@ -161,7 +203,7 @@ def to_device(data: np.ndarray, *, stream: Any = None) -> Any:
 class ZarrVolume:
     """An OME-Zarr level (or bare Zarr array). Opening checks that every chunk is stored (``check_chunks``)."""
 
-    def __init__(self, uri: str, array_path: str = "0", *, check_chunks: bool = True) -> None:
+    def __init__(self, uri: str, array_path: str = "0", *, check_chunks: bool = True, gpu_io: str = "auto") -> None:
         import zarr
 
         node = zarr.open(uri, mode="r")
@@ -184,9 +226,10 @@ class ZarrVolume:
                 f"{uri}: only {stored} of {total} chunks are stored; missing chunks read as {self.array.fill_value}. "
                 f"Fine if those regions are empty; otherwise the copy or conversion is incomplete "
                 f"(`zvdvc convert` stores every chunk)", stacklevel=2)
+        self.io, self.io_note, self._reader = _device_reader(gpu_io, lambda: _gds().ShardedZarrReader(self.array))
 
     def read_brick(self, box: Box, *, device: Device = "cuda", stream: Any = None) -> Brick:
-        return _read_brick(self.array, self.shape, box, device, stream, self.uri)
+        return _read_brick(self.array, self.shape, box, device, stream, self.uri, self._reader)
 
 
 _MHD_TYPES = {
@@ -241,6 +284,7 @@ class RawVolume:
         shape_xyz: tuple[int, int, int] | None = None,
         dtype: str | None = None,
         header_bytes: int = 0,
+        gpu_io: str = "auto",
     ) -> None:
         path = Path(path)
         suffix = path.suffix.lower()
@@ -269,8 +313,35 @@ class RawVolume:
         self.shape: tuple[int, int, int] = tuple(int(n) for n in array.shape)
         self.dtype = native(array.dtype)
 
+        def reader() -> Any:
+            gds = _gds()
+            if not array.flags.c_contiguous:
+                r = gds.DeviceReader()
+                r.why_not = "not C-ordered (a Fortran-ordered .npy)"
+                return r
+            return gds.RawDeviceReader(path, header_bytes=self.header_bytes, dtype=array.dtype, shape_zyx=self.shape)
+
+        self.io, self.io_note, self._reader = _device_reader(gpu_io, reader)
+
     def read_brick(self, box: Box, *, device: Device = "cuda", stream: Any = None) -> Brick:
-        return _read_brick(self.array, self.shape, box, device, stream, str(self.path))
+        return _read_brick(self.array, self.shape, box, device, stream, str(self.path), self._reader)
+
+
+def _gds() -> Any:
+    from zvdvc.io import gds
+
+    return gds
+
+
+def _device_reader(gpu_io: str, make: Any) -> tuple[str, str | None, Any]:
+    """(read path, why the device path is not used, device reader or None) for a volume source."""
+    gds = _gds()
+    if gds.resolve(gpu_io) == "host":
+        return "host", (None if gpu_io == "host" else gds.status().get("why")), None
+    reader = make()
+    if reader.why_not:
+        return "host", reader.why_not, None
+    return "kvikio", None, reader
 
 
 def _check_raw_size(path: Path, shape_xyz: tuple[int, int, int], dtype: np.dtype, header: int, hint: str) -> None:
@@ -299,9 +370,10 @@ def open_volume(spec: VolumeSpec, which: Literal["reference", "deformed"]) -> Vo
     """Pick ``ZarrVolume`` or ``RawVolume`` from the URI; wrapped in :class:`FilteredVolume` if ``prefilter_sigma``."""
     uri = getattr(spec, which)
     if is_zarr_uri(uri):
-        vol: Any = ZarrVolume(uri, spec.array_path)
+        vol: Any = ZarrVolume(uri, spec.array_path, gpu_io=spec.gpu_io)
     else:
-        vol = RawVolume(uri, shape_xyz=spec.raw_shape_xyz, dtype=spec.raw_dtype, header_bytes=spec.raw_header_bytes)
+        vol = RawVolume(uri, shape_xyz=spec.raw_shape_xyz, dtype=spec.raw_dtype, header_bytes=spec.raw_header_bytes,
+                        gpu_io=spec.gpu_io)
     return FilteredVolume(vol, spec.prefilter_sigma) if spec.prefilter_sigma > 0 else vol
 
 
@@ -327,6 +399,7 @@ class FilteredVolume:
         self.inner, self.sigma = inner, float(sigma)
         self.shape, self.dtype = inner.shape, np.dtype(inner.dtype)
         self.array = inner.array             # unfiltered; for tools that inspect the raw data
+        self.io, self.io_note = getattr(inner, "io", "host"), getattr(inner, "io_note", None)
         self.margin = int(math.ceil(TRUNCATE * self.sigma))
 
     def read_brick(self, box: Box, *, device: Device = "cuda", stream: Any = None) -> Brick:
@@ -334,7 +407,7 @@ class FilteredVolume:
         grown = self.inner.read_brick(box.grow(m), device=device, stream=stream)
         data = gaussian_filtered(grown.data, self.sigma, self.dtype)
         inner = tuple(slice(m, n - m) for n in data.shape)
-        return Brick(data=data[inner], box=box, valid=box.intersect(Box((0, 0, 0), self.shape)) or box)
+        return Brick(data=data[inner], box=box, valid=box.intersect(Box((0, 0, 0), self.shape)) or box, io=grown.io)
 
 
 def gaussian_filtered(data: Any, sigma: float, dtype: Any, slab: int = FilteredVolume.SLAB) -> Any:
@@ -402,7 +475,7 @@ def create_ome_zarr(
     Shards are rounded up to a multiple of the chunk and never exceed what the
     volume needs, so small test volumes get one shard. Every chunk is stored,
     even an empty one, so a missing chunk means an incomplete array
-    (:class:`ZarrVolume` refuses those). An existing ``path`` is an error unless
+    (:class:`ZarrVolume` warns about those). An existing ``path`` is an error unless
     ``overwrite``, and even then only an existing Zarr store is replaced.
     """
     import zarr
@@ -495,10 +568,10 @@ def convert_to_ome_zarr(
             raise ValueError(f"{src}: expected a 3-D stack, got shape {array.shape}")
         source_shape, source_dtype = tuple(array.shape), np.dtype(array.dtype)
     elif is_zarr_uri(src):
-        vol = ZarrVolume(str(src), check_chunks=False)       # missing chunks convert to the fill value
+        vol = ZarrVolume(str(src), check_chunks=False, gpu_io="host")   # missing chunks convert to the fill value
         array, source_shape, source_dtype = vol.array, vol.shape, vol.dtype
     else:
-        vol = RawVolume(src, shape_xyz=shape_xyz, dtype=dtype, header_bytes=header_bytes)
+        vol = RawVolume(src, shape_xyz=shape_xyz, dtype=dtype, header_bytes=header_bytes, gpu_io="host")
         array, source_shape, source_dtype = vol.array, vol.shape, vol.dtype
     out_dtype = native(source_dtype)
     tmp = d.parent / f".{d.name}.tmp-{os.getpid()}"

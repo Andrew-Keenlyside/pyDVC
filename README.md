@@ -28,8 +28,11 @@ zvDVC was previously called pyDVC.
 > an RTX A2000; CCPi DVC, as iDVC runs it, takes 37 min. Interior points agree
 > with CCPi in status on 100 % of points, with no systematic displacement
 > difference ([report](docs/benchmarks/2026-09-26-case-A-real.md)). Multi-GPU
-> runs on 8× H100 are implemented but not yet measured. **GPUDirect Storage is
-> not wired in or measured yet**: every number so far uses host reads.
+> runs on 8× H100 are implemented but not yet measured. **GPUDirect Storage:**
+> the device read path is implemented and, even without GDS enabled, reads
+> compressed OME-Zarr bricks twice as fast
+> ([report](docs/benchmarks/2026-09-29-gds-read-paths.md)); runs with GDS itself
+> are not measured yet.
 
 ## Install
 

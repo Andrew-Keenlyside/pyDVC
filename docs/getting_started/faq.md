@@ -169,11 +169,13 @@ read.
 
 ### Does zvDVC use GPUDirect Storage?
 
-Not yet. GPUDirect Storage (GDS) is not wired in and has not been measured.
-Every published zvDVC number uses host decode plus one pinned host-to-device
-copy per brick. Adding device reads for points, results and image bricks, and
-measuring host against GDS, is roadmap milestone M6. See
-{doc}`/how_to/gpudirect_storage`.
+It can. `volumes.gpu_io: kvikio` reads image bricks straight into GPU memory
+with kvikio, which uses GPUDirect Storage (GDS) where the machine has it, and
+decompresses zstd on the GPU. The default, `auto`, does so only when cuFile
+reports GDS available. Measured so far only without GDS: compressed OME-Zarr
+bricks already read twice as fast
+({doc}`/benchmarks/2026-09-29-gds-read-paths`). Enabling GDS needs root on the
+machine; see {doc}`/how_to/gpudirect_storage`.
 
 ### Why zarr-vectors for points and results?
 

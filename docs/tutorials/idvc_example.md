@@ -356,4 +356,5 @@ run, against the committed baseline for this machine; see
 * Only one dataset, and only a single slice of points.
 * Only one workstation GPU. Tiled multi-GPU runs on 8 × H100 are implemented
   but not yet measured.
-* GPUDirect Storage: not wired in. Every time here uses host reads.
+* Every time here uses the host read path; the GPUDirect Storage path
+  ({doc}`/how_to/gpudirect_storage`) was added later.

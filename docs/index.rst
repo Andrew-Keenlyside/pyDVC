@@ -31,8 +31,9 @@ including reads over GPUDirect Storage, gains a real HPC workload.
    **Status.** The single-GPU pipeline is complete and measured. On iDVC's
    example dataset (4 680 points), zvDVC takes 1.6 s on an RTX A2000; CCPi DVC,
    as iDVC runs it, takes 37 min. The multi-GPU launcher is implemented but not
-   yet measured on 8× H100, and GPUDirect Storage is not wired in or measured
-   yet: every published number uses host reads. See :doc:`benchmarks/index`.
+   yet measured on 8× H100. The GPUDirect Storage read path is implemented and,
+   before GDS is even enabled, reads compressed OME-Zarr bricks twice as fast;
+   runs with GDS itself are not measured yet. See :doc:`benchmarks/index`.
 
 ----
 
@@ -53,6 +54,9 @@ Where to start
      - The mental model: points, subvolumes, tiles, bricks, batches and seeding.
    * - :doc:`spec/index`
      - The method, the run configuration and the on-disk formats in full.
+   * - :doc:`validation/index`
+     - The evidence that the results are right: against iDVC on its test
+       dataset, and against known answers.
    * - :doc:`tutorials/idvc_example`
      - iDVC's own example dataset, run with CCPi DVC and with zvDVC side by side.
    * - :doc:`benchmarks/index`
@@ -78,6 +82,13 @@ Where to start
    :hidden:
 
    spec/index
+
+.. toctree::
+   :maxdepth: 1
+   :caption: Validation
+   :hidden:
+
+   validation/index
 
 .. toctree::
    :maxdepth: 1

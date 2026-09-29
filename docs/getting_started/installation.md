@@ -74,7 +74,7 @@ From [`pyproject.toml`](https://github.com/Andrew-Keenlyside/zvDVC/blob/main/pyp
 | `[test]` | pytest ≥ 8 | the test suite and `zvdvc check` |
 | `[cpu-fast]` | numba ≥ 0.59 | the `cpu` backend: the fused Gauss–Newton step on all CPU cores. Without it, CPU runs fall back to the slower `numpy` reference |
 | `[gpu]` | `cupy-cuda12x` ≥ 13 (Linux), `zarr-vectors[gpu-codecs]` | the `fused` and `cupy` GPU backends, for pip-only environments (not with the conda GPU environment; see the warning above) |
-| `[gpu-io]` | `zarr-vectors[gpu-io]` (kvikio) | zarr-vectors' device reads with kvikio / GPUDirect Storage. zvDVC does not use this path yet (M6; see {doc}`/how_to/gpudirect_storage`) |
+| `[gpu-io]` | `zarr-vectors[gpu-io]` (kvikio), `nvidia-nvcomp-cu12` | the kvikio / GPUDirect Storage brick read path (`volumes.gpu_io`) with zstd decoded on the GPU. For pip-only environments: in the conda GPU environment install kvikio from the `rapidsai` channel instead (see {doc}`/how_to/gpudirect_storage`) |
 | `[tiff]` | tifffile ≥ 2024.1 | `.tif` / `.tiff` stacks as input to `zvdvc convert` |
 | `[mpi]` | mpi4py ≥ 3.1 | reserved for MPI launches; Open MPI ranks are currently read from environment variables, so it is not required |
 

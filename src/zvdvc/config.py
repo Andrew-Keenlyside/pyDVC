@@ -23,6 +23,7 @@ Objective = Literal["sad", "ssd", "zssd", "nssd", "znssd"]
 Interpolation = Literal["nearest", "trilinear", "tricubic"]
 Method = Literal["fagn", "icgn"]
 SeedStrategy = Literal["rigid", "wavefront", "coarse", "fft"]
+GpuIo = Literal["auto", "host", "kvikio"]
 Vec3 = tuple[float, float, float]
 
 MAX_SAMPLES = 1_000_000          # subvolume.n_samples cap: memory and time per point grow with it
@@ -41,6 +42,10 @@ class VolumeSpec:
     # Gaussian low-pass applied to both volumes as they are read (voxels; 0 = off, as CCPi).
     # ~1 voxel removes most interpolation bias (docs/benchmarks/2026-09-26-error-floor-case-A.md).
     prefilter_sigma: float = 0.0
+    # How bricks reach the GPU: "host" (decode on the host, one copy up), "kvikio" (read with kvikio,
+    # GPUDirect Storage where available; zstd decoded by nvCOMP), "auto" (kvikio only when GPUDirect
+    # Storage is available; $ZVDVC_GPU_IO overrides). Does not change results. See zvdvc.io.gds.
+    gpu_io: GpuIo = "auto"
 
 
 @dataclass(frozen=True)

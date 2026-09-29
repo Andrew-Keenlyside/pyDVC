@@ -138,10 +138,12 @@ The images themselves are dense volumes, stored as sharded OME-Zarr v3.
 
 The project also aims to show what zarr-vectors' GPU backend gains a real HPC
 workload, including reads over **GPUDirect Storage (GDS)**, which moves bytes
-from NVMe straight into GPU memory. **GDS is not wired into zvDVC and has not
-been measured.** Every published zvDVC timing uses host decode plus one
-pinned host-to-device copy. The GDS work, and the host-versus-GDS benchmark,
-are roadmap milestone M6; see {doc}`/how_to/gpudirect_storage`.
+from NVMe straight into GPU memory. zvDVC's device read path (kvikio, with
+zstd decoded on the GPU by nvCOMP) is implemented, and before GDS is even
+enabled it reads compressed OME-Zarr bricks twice as fast as the host path
+({doc}`/benchmarks/2026-09-29-gds-read-paths`). **Runs with GDS itself have not
+been measured yet**, and the timings in the benchmark reports before
+2026-09-29 all use the host path; see {doc}`/how_to/gpudirect_storage`.
 
 ## Current status
 

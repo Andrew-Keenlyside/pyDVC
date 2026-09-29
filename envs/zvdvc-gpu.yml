@@ -1,8 +1,10 @@
 # GPU workstation or cluster (CUDA 12 driver). Then, from the repository root:
 #   pip install -e ".[test,cpu-fast]"
-#   pip install "zarr-vectors[gpu-codecs] @ git+https://github.com/AllenInstitute/zarr-vectors-py.git@06a3bc8a08afefc02cd1ffb265d67a03df798b87"
+# Not the [gpu], [gpu-codecs] or [gpu-io] extras: they pull pip's cupy/kvikio wheels over conda's
+# (docs/TESTING.md). kvikio comes from rapidsai below, nvCOMP from pip.
 name: zvdvc-gpu
 channels:
+  - rapidsai
   - conda-forge
 dependencies:
   - python=3.11
@@ -16,3 +18,6 @@ dependencies:
   - pip
   - cupy>=13             # backends "fused" and "cupy"; brings the CUDA runtime and NVRTC
   - cuda-version=12
+  - kvikio>=26.08        # GPUDirect Storage brick reads (volumes.gpu_io); conda, not pip, to keep one cupy
+  - pip:
+      - nvidia-nvcomp-cu12   # zstd decoded on the GPU (the kvikio read path, zarr-vectors' GPU codecs)
