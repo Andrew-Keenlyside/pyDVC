@@ -40,6 +40,10 @@ from typing import Any
 
 import numpy as np
 
+from zvdvc.bench.plotstyle import BLUE_RAMP, GRID, INK, INK2, MUTED, SERIES, SURFACE, fields_figure
+from zvdvc.bench.plotstyle import grid_image as _grid_image
+from zvdvc.bench.plotstyle import row_of as _row
+from zvdvc.bench.plotstyle import style as _style
 from zvdvc.config import RunConfig
 
 # name -> (geometry, template seed, backend, tolerances); "ccpi" tolerances are CCPi's hard-coded ones
@@ -228,56 +232,16 @@ def markdown_tables(report: dict[str, Any]) -> str:
 
 
 # -- figures ---------------------------------------------------------------------------------------
-# Reference palette (dataviz skill): categorical slots 1–4 validated for light mode (adjacent CVD ΔE ≥ 9.1);
-# slots 3–4 sit below 3:1 contrast on the surface, so every line carries a direct label.
-SURFACE, INK, INK2, MUTED, GRID, AXIS = "#fcfcfb", "#0b0b0b", "#52514e", "#898781", "#e1e0d9", "#c3c2b7"
-SERIES = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100"]
-BLUE_RAMP = ["#cde2fb", "#9ec5f4", "#6da7ec", "#3987e5", "#256abf", "#184f95", "#0d366b"]
-DIVERGING = ["#184f95", "#3987e5", "#9ec5f4", "#f0efec", "#f4a3a2", "#e34948", "#a8201f"]
-
-
-def _style(plt: Any) -> None:
-    plt.rcParams.update({
-        "figure.facecolor": SURFACE, "axes.facecolor": SURFACE, "savefig.facecolor": SURFACE,
-        "font.family": "sans-serif", "font.size": 9, "text.color": INK, "axes.labelcolor": INK2,
-        "axes.edgecolor": AXIS, "xtick.color": MUTED, "ytick.color": MUTED, "axes.titlesize": 10,
-        "axes.titleweight": "bold", "axes.spines.top": False, "axes.spines.right": False,
-        "grid.color": GRID, "grid.linewidth": 0.6, "legend.frameon": False,
-    })
-
-
-def _grid_image(r: dict[str, Any], values: np.ndarray, ids: np.ndarray) -> tuple[np.ndarray, list[float]]:
-    """Scatter ``values`` at points ``ids`` onto the (y, x) grid of case A's single-plane point cloud.
-
-    ``r`` supplies the positions and the grid: a result holding every point (rows in any order).
-    """
-    order = np.argsort(r["point_id"])
-    rows = order[np.searchsorted(r["point_id"], ids, sorter=order)]
-    xy = r["xyz"][rows][:, :2]
-    xs, ys = np.unique(r["xyz"][:, 0]), np.unique(r["xyz"][:, 1])
-    img = np.full((len(ys), len(xs)), np.nan)
-    img[np.searchsorted(ys, xy[:, 1]), np.searchsorted(xs, xy[:, 0])] = values
-    step = (xs[1] - xs[0]) / 2 if len(xs) > 1 else 0.5
-    return img, [xs[0] - step, xs[-1] + step, ys[-1] + step, ys[0] - step]
-
-
-def _row(r: dict[str, Any], ids: np.ndarray) -> np.ndarray:
-    order = np.argsort(r["point_id"])
-    return order[np.searchsorted(r["point_id"], ids, sorter=order)]
-
-
 def plot_all(runs: dict[str, dict[str, Any]], rows: list[dict[str, Any]], figures: Path) -> None:
     import matplotlib
 
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
-    from matplotlib.colors import LinearSegmentedColormap, LogNorm, TwoSlopeNorm
+    from matplotlib.colors import LinearSegmentedColormap, LogNorm
 
     _style(plt)
     seq = LinearSegmentedColormap.from_list("seq", BLUE_RAMP)
     seq.set_bad("#f0efec")
-    div = LinearSegmentedColormap.from_list("div", DIVERGING)
-    div.set_bad("#f0efec")
     by_label = {r["label"]: r for r in rows}
     grid = max(runs.values(), key=lambda r: len(r["point_id"]))     # a result holding every point
 
@@ -359,28 +323,9 @@ def plot_all(runs: dict[str, dict[str, Any]], rows: list[dict[str, Any]], figure
         a, b = runs[pair["a"]], runs[pair["b"]]
         ids = pair["_ids"]
         ua, ub = a["displacement"][_row(a, ids)], b["displacement"][_row(b, ids)]
-        fig, axes = plt.subplots(3, 3, figsize=(10.5, 6.6), constrained_layout=True)
-        for k, comp in enumerate(["u (x)", "v (y)", "w (z)"]):
-            lo, hi = np.percentile(np.concatenate([ua[:, k], ub[:, k]]), [1, 99])
-            for j, (vals, title) in enumerate([(ub[:, k], "CCPi DVC 22.0.0"), (ua[:, k], "zvDVC (float64)")]):
-                img, ext = _grid_image(grid, vals, ids)
-                im = axes[k, j].imshow(img, extent=ext, cmap=seq, vmin=lo, vmax=hi, interpolation="nearest")
-                axes[k, j].set_title(f"{title}: {comp}", fontsize=9)
-            fig.colorbar(im, ax=axes[k, :2], shrink=0.85, label="voxels")
-            dd = ua[:, k] - ub[:, k]
-            lim = float(np.percentile(np.abs(dd), 99)) or 1e-6
-            img, ext = _grid_image(grid, dd, ids)
-            im = axes[k, 2].imshow(img, extent=ext, cmap=div, norm=TwoSlopeNorm(0, -lim, lim), interpolation="nearest")
-            axes[k, 2].set_title(f"zvDVC − CCPi: {comp}", fontsize=9)
-            fig.colorbar(im, ax=axes[k, 2], shrink=0.85, label="voxels")
-        for axx in axes.ravel():
-            axx.set_xlabel("x (voxels)", fontsize=8)
-            axx.set_ylabel("y", fontsize=8)
-            axx.tick_params(labelsize=7)
-        fig.suptitle("Case A displacement field, cube subvolumes (same sample points in both codes); z = 630 plane; "
-                     "grey = edge or failed points", fontsize=10, x=0.01, ha="left")
-        fig.savefig(figures / "fields_cube.png", dpi=150)
-        plt.close(fig)
+        fields_figure(grid, ids, ub, ua, ("CCPi DVC 22.0.0", "zvDVC (float64)"), figures / "fields_cube.png",
+                      "Case A displacement field, cube subvolumes (same sample points in both codes); z = 630 plane; "
+                      "grey = edge or failed points")
 
     # 4. Where the differences are: |Δu| maps on one log colour scale, 2 x 2.
     maps = [(label, short) for label, short in [

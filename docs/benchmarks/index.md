@@ -9,8 +9,9 @@ with the full setup.
 ```{important}
 Everything here was measured on a 4-vCPU cloud VM or on one workstation with
 an RTX A2000 12 GB. **Nothing has been measured on an H100 or on more than one
-GPU yet**, and **GPUDirect Storage is not wired in**: every time uses host
-decode plus one pinned host-to-device copy. The H100 and 8 × H100 figures in
+GPU yet**, and **nothing with GPUDirect Storage enabled**: every run time uses
+host decode plus one pinned host-to-device copy, and the brick-read comparison
+of 2026-09-29 uses kvikio without GDS. The H100 and 8 × H100 figures in
 {doc}`/PERFORMANCE` are **modelled, not measured**.
 ```
 
@@ -24,6 +25,45 @@ decode plus one pinned host-to-device copy. The H100 and 8 × H100 figures in
 | `msm12` workstation | 32 cores, x86-64 | 251 GB | NVIDIA RTX A2000 12 GB (CUDA 12.9, cupy 14.2) | 2026-09-26 reports, check-suite baseline |
 
 CCPi DVC is always version 22.0.0 (see {ref}`below <ccpi-version>`).
+
+## Against iDVC on its test dataset
+
+iDVC's example data (case A: 4 680 points, sphere 80, 8 000 samples, 6-DOF,
+ZNSSD, tricubic), with iDVC's settings, on one workstation (RTX A2000 12 GB,
+32 cores). "iDVC's engine" is CCPi DVC 22.0.0 run the way iDVC runs it.
+
+```{figure} figures/summary/speed_case_a.png
+:alt: Horizontal bar chart of wall time on a log scale. iDVC's engine as iDVC runs it 2,231 s; as 32 single-thread processes 711 s; zvDVC on 32 CPU cores 17.1 s end to end and 7.6 s in memory; zvDVC on the GPU 4.3 s end to end and 1.6 s in memory, 1,396 times faster than iDVC.
+:figclass: zv-figure
+:width: 100%
+
+Wall time for the whole grid. zvDVC on one workstation GPU is 1 396× faster
+than iDVC in memory, and 524× faster through the command line, start-up and
+file I/O included ({doc}`2026-09-26-case-A-real`).
+```
+
+```{figure} figures/2026-09-29-idvc/error_budget.png
+:alt: Range chart of the median and 95th-percentile difference between pairs of results. With iDVC's settings zvDVC and iDVC differ by 0.051 voxel, the same as iDVC against itself; with identical sample points by 0.0010; run to convergence by 2.1e-5.
+:figclass: zv-figure
+:width: 100%
+
+How far zvDVC's results are from iDVC's, and why: with iDVC's settings exactly
+as far as iDVC's own results are from each other
+({doc}`2026-09-29-idvc-comparison`; {doc}`/validation/idvc_test_dataset`).
+```
+
+## Reading bricks
+
+```{figure} figures/summary/gds_read_paths.png
+:alt: Grouped bar chart of brick read throughput for the host and kvikio paths. Raw warm 2.45 and 4.90 GB/s; raw cold 2.52 and 1.64; OME-Zarr zstd warm 0.90 and 1.84; OME-Zarr zstd cold 0.68 and 1.48.
+:figclass: zv-figure
+:width: 90%
+
+Brick reads from case A's scan on NVMe, on the host path and the kvikio path,
+**before GPUDirect Storage is enabled** on this machine
+({doc}`2026-09-29-gds-read-paths`). Compressed OME-Zarr is already twice as
+fast on the kvikio path, from decompressing on the GPU.
+```
 
 ## Summary of measured results
 
@@ -39,6 +79,7 @@ CCPi DVC is always version 22.0.0 (see {ref}`below <ccpi-version>`).
 | Case A twin (synthetic, case A geometry and settings) | cloud VM | CCPi as iDVC runs it: 1 069 s | zvDVC CPU engine 28.6 s in memory (37×), 47.6 s through the CLI (22×) | {doc}`2026-09-25-M4-case-A-twin` |
 | **Case A, real data** (4 680 points, sphere 80, 8 000 samples, 6-DOF) | `msm12` | CCPi as iDVC runs it: 2 231 s (37 min) | **zvDVC GPU 1.6 s in memory (1 396×)**, 4.3 s through the CLI (524×); zvDVC CPU engine on 32 cores 7.6 s (293×), 17.1 s (131×); CCPi as 32 processes 711 s (3.1×) | {doc}`2026-09-26-case-A-real` |
 | Case A, 285 480-point 3D grid | `msm12` | zvDVC CPU engine, 32 cores: ~300 s | GPU solve 18.7 s | {doc}`2026-09-26-case-A-real` |
+| Brick reads, case A reference (512³ u8 bricks), host path vs kvikio path **without** GPUDirect Storage | `msm12`, NVMe | host decode + one copy up | compressed OME-Zarr: 1.84 vs 0.90 GB/s warm, 1.48 vs 0.68 cold (≈ 2×, GPU zstd decode); raw: 4.90 vs 2.45 warm, 1.64 vs 2.52 cold; bricks identical | {doc}`2026-09-29-gds-read-paths` |
 | Fused kernel `gn_sums` on case A data | `msm12` | first GPU run: 38 µs per point-iteration | 3.7 µs per point-iteration after sorting template samples and packing u8 loads; ~1.2 TFLOP/s by operation count | {doc}`2026-09-26-case-A-real`, {doc}`/PERFORMANCE` §4.4 |
 
 ### Accuracy
@@ -81,7 +122,7 @@ against, not a separate benchmark.
 | what | status |
 |---|---|
 | **8 × H100 multi-GPU scaling** (Q2 kernel throughput on H100, Q3 1→8 GPU efficiency) | The launcher (one process per GPU, shared tile queue) and the scaling campaign (`zvdvc.bench.campaign`, `sge/benchmark.qsub`) are implemented; not yet run. See {doc}`/CLUSTER`. |
-| **GPUDirect Storage** (roadmap M6) | Not wired in. The planned benchmark compares host reads with GDS on node-local NVMe on an 8 × H100 node, per stage and end to end, for both the image bricks and the zarr-vectors point and result reads. See {doc}`/how_to/gpudirect_storage`. |
+| **GPUDirect Storage** (roadmap M6) | The read path and its benchmark (`python -m zvdvc.bench.gds`) exist and are measured without GDS ({doc}`2026-09-29-gds-read-paths`). Still to measure: brick reads and whole runs with GDS enabled (`nvidia-fs` installed, IOMMU off), on the workstation's NVMe and on an 8 × H100 node's local NVMe. See {doc}`/how_to/gpudirect_storage`. |
 | **Scenario B** (4096³ u16 pair, ~275 GB, ~8.4 M points) | Configuration ([`configs/large_8xh100.yaml`](https://github.com/Andrew-Keenlyside/zvDVC/blob/main/configs/large_8xh100.yaml)) and case L generator exist; no run yet. The 1–3 min estimate in {doc}`/PERFORMANCE` is modelled. |
 | Tiled GPU run with I/O wait (Q4) | Case M's I/O wait was measured only on the CPU engine, where compute is slow enough to hide I/O. |
 | Nsight Compute counters for the fused kernel | Need profiling permissions not available on the workstation. |
@@ -176,6 +217,7 @@ on a fresh machine.
 ```{toctree}
 :maxdepth: 1
 
+2026-09-29-gds-read-paths
 2026-09-29-idvc-comparison
 2026-09-26-case-A-real
 2026-09-26-error-floor-case-A
