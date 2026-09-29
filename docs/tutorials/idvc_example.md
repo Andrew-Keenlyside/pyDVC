@@ -270,7 +270,7 @@ zvdvc compare caseA/results.zarrvectors runs/case_A/ccpi_ccpi-dvc-22.0.0/t32_p1.
 ```text
 {'tiles': 1, 'points': 4680, 'memory': {'brick_bytes': 498631490, 'in_flight_bytes': 498631490, 'batch_bytes': 339580800, 'device_bytes': 9983806668, 'fits': True}, 'plan': 'caseA/work/plan.json'}
 {'strategy': 'wavefront', 'points': 4680, 'seconds': 2.099516296060756}
-device 0: 0 tiles solved, 1 already written, 0 points, 0.00 GB read, compute 0.0 s, I/O wait n/a, status counts {}, 0 errors
+device 0: 0 tiles solved, 0 written, 1 already written, 0 points, 0.00 GB read, compute 0.0 s, I/O wait n/a, status counts {}, 0 errors
 RunSummary(n_points=4680, seconds=1.0903416230576113, counts={-1: 52, 0: 4628})
 points 4680, GOOD 4628 (98.89 %)  [GOOD 4628, RANGE_FAIL 52]
 …
@@ -281,6 +281,9 @@ The configuration makes the whole volume one tile with `wavefront` seeding,
 so `seed` does the solving (see {doc}`/tutorials/synthetic_first_run`,
 section 4). The brick is small because the grid is a single slice: the
 reference brick covers the slice plus the halo, not the whole volume.
+`caseA.yaml` holds relative paths, so run every stage from the same
+directory: the results store records the volumes' resolved paths, and
+`plan` or `run` from elsewhere refuses to resume into it.
 
 ## 7. Measured results
 

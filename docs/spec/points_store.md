@@ -73,6 +73,11 @@ clouds:
 * `n` becomes `point_id` (int64), `x y z` the position in voxels;
 * the first point is CCPi's default start point.
 
+A cloud with no points, a non-finite coordinate or a repeated `n` is refused
+(`ValueError` naming the line or the repeated ids). Results are matched to
+points by id, so ids must be unique. `write_pointcloud_store` applies the same
+checks, and `zvdvc plan` applies them to a store written by another tool.
+
 `zvdvc.io.ccpi.write_roi` writes one `n<TAB>x<TAB>y<TAB>z` line per point
 (`%.9g`), with no header.
 
@@ -95,7 +100,10 @@ reads the point file and writes a store with
 * **`bin_shape`** half the chunk shape (`default_bin_shape`).
 
 Points outside the bounds are refused (`ValueError`). `zvdvc plan` re-imports
-when the point file is newer than the store.
+when the point file is newer than the store; a failed import leaves no store.
+`zvdvc seed` and `zvdvc run` refuse a point file changed after `zvdvc plan`
+imported it, and the results store refuses other points than it was made for
+({doc}`results_store`, "Run fingerprint").
 
 ### Layout
 

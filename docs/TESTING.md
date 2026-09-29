@@ -208,7 +208,8 @@ Pieces you can run by hand on an allocated node:
 
 Resume and recovery (M4's `kill -9` criterion): during `zvdvc run`, kill one
 worker, whose pid is in `WORKDIR/workers/slot*.pid`. The other workers finish
-the queue. `run_stats.json` and `failed_tiles.json` list the missing tiles, and
+the queue. `run_stats.json` and `failed_tiles.json` list the missing tiles,
+`zvdvc run` exits with status 3 (so `&& zvdvc finalize` does not run), and
 running `zvdvc run` again solves only those.
 
 Notes:

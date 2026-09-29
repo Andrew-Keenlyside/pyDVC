@@ -108,7 +108,7 @@ is smaller than `disp_tol` (0.01 voxel), after at most `max_iterations` (20).
   finite differences, and solves all points' systems in one batched call.
 * **IC-GN** (inverse-compositional, `icgn`) builds the Hessian once per point
   from the reference and is cheaper per iteration. It is planned (M5) and not
-  implemented yet.
+  implemented yet; a configuration that asks for it is refused.
 
 Optionally, a translation grid search (`search.basin_radius > 0`) runs before
 Gauss–Newton. {doc}`/spec/method` has the full method.
@@ -125,7 +125,7 @@ meaning, so exported `.disp` files read correctly in iDVC:
 | −2 | `CONVG_FAIL` | reached `max_iterations` without meeting a tolerance |
 | −3 | `NOT_SEARCHED` | never attempted |
 | −4 | `THRESH_FAIL` | zvDVC: too little foreground in the subvolume (`search.threshold`, CCPi's `subvol_thresh`) |
-| −5 | `SINGULAR` | zvDVC: normal equations ill-conditioned, e.g. a featureless subvolume |
+| −5 | `SINGULAR` | zvDVC: ill-conditioned: a featureless reference or target subvolume, or a non-finite result |
 
 CCPi never reports `CONVG_FAIL`; zvDVC does unless
 `search.report_convg_fail` is false. In `.disp` exports, codes −4 and −5
@@ -188,11 +188,13 @@ neighbours, which forces a serial order. zvDVC offers
 | `wavefront` | points are grouped into distance shells from the start point; each shell is solved as one batch, seeded from earlier shells | CCPi parity; the default. Solves the whole problem in `zvdvc seed`, on one device |
 | `coarse` | every `coarse_stride`-th grid point is solved first (in wavefront order), and that sparse field is interpolated to seed every point | production and multi-GPU: tiles become independent |
 | `rigid` | every point starts at `search.rigid_trans` | small or smooth deformations, tests |
-| `fft` | FFT cross-correlation per point | planned (M5), not implemented |
+| `fft` | FFT cross-correlation per point | planned (M5), not implemented; refused when the config is loaded |
 
 Today `wavefront` and `coarse` read both whole volumes into host memory, and
 `zvdvc seed` refuses volumes that do not fit; use `rigid` for very large
-volumes until the pyramid-level coarse pass (M5).
+volumes until the pyramid-level coarse pass (M5). `zvdvc run` enforces the
+mode: with `coarse` it needs `zvdvc seed` to have written the seed field, and
+with `wavefront` it needs `zvdvc seed` to have written every point.
 
 ## Repair
 
@@ -224,10 +226,15 @@ Every stage can be re-run safely:
   so a worker killed mid-cell leaves nothing that looks finished.
 * After a crash, a time-out or a killed worker, run the same `zvdvc run`
   command again: it solves only the missing tiles. `run_stats.json` and
-  `failed_tiles.json` in the work directory list what was missing.
-* A resumed run cannot silently mix settings: the results store records the
-  template, the DOF, the chunk grid and the prefilter, and `zvdvc plan`
-  refuses a store written with different ones.
+  `failed_tiles.json` in the work directory list what was missing, and
+  `zvdvc run` exits with status 3 while any is. `zvdvc finalize` refuses
+  until every cell is written, unless `--allow-partial`.
+* A resumed run cannot silently mix settings or inputs: the results store
+  records the template, the DOF, the chunk grid, the prefilter and a
+  fingerprint of the result-affecting settings, the volumes and the points.
+  `zvdvc plan`, `seed` and `run` refuse to add to a store made from anything
+  else. Moving or copying the volumes counts as a change: plan again with a
+  new output.
 
 ## Where things live
 
@@ -239,4 +246,4 @@ Every stage can be re-run safely:
 | `<workdir>/seeds.npz` | `seed` (`coarse`) | the seed for every point |
 | `<output>` | `plan` (allocate), `seed`, `run` | the results store |
 | `<workdir>/run_stats.json`, `failed_tiles.json` | `run` | timings, missing tiles |
-| `<workdir>/results.stat`, `results.disp` | `finalize` | CCPi-format summary and displacements |
+| `<workdir>/results.stat`, `results.disp` | `finalize` | run summary, and CCPi-format displacements |

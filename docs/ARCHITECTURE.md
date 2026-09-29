@@ -261,10 +261,15 @@ GPUs for time series (§11).
   for the resubmitted job, which then wrote a bit-identical store).
 * Worker processes share one node-local queue. When one dies (`kill -9`, OOM,
   a GPU fault), the others keep draining the queue, and `run` lists the tiles
-  still missing in `run_stats.json` and `failed_tiles.json` for the resubmission.
+  still missing in `run_stats.json` and `failed_tiles.json` for the resubmission,
+  and exits with status 3; `finalize` refuses while cells are unwritten
+  (unless `--allow-partial`).
 * A tile that raises is requeued once, then recorded as failed.
-* `plan.json` records the zarr-vectors commit, the template hash and the
-  config, so a resumed run cannot silently mix settings.
+* `plan.json` records the zarr-vectors commit, the template hash, the config
+  and a run fingerprint (result-affecting settings, the volumes' identity,
+  a digest of the points), which the results store records too. `plan`,
+  `seed` and `run` refuse a config or inputs that differ from them, so a
+  resumed run cannot silently mix settings or data.
 
 ## 10. Where zvDVC diverges from CCPi
 

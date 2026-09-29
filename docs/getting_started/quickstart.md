@@ -50,7 +50,7 @@ Output on a workstation GPU (trimmed):
 ```text
 {'tiles': 1, 'points': 125, 'memory': {…, 'fits': True}, 'plan': '/…/data/synth128/run/plan.json'}
 {'strategy': 'wavefront', 'points': 125, 'seconds': 0.64}
-device 0: 0 tiles solved, 1 already written, 0 points, 0.00 GB read, compute 0.0 s, I/O wait n/a, status counts {}, 0 errors
+device 0: 0 tiles solved, 0 written, 1 already written, 0 points, 0.00 GB read, compute 0.0 s, I/O wait n/a, status counts {}, 0 errors
 RunSummary(n_points=125, seconds=1.09, counts={0: 125})
 ```
 
@@ -62,7 +62,8 @@ What each stage did:
 * **`seed`** with `wavefront` seeding (the CCPi-parity mode) solves every
   point, shell by shell from the start point, and writes the results.
 * **`run`** is the tiled solve. It skips tiles already in the results store,
-  which is why it found nothing left to do here. With `coarse` or `rigid`
+  which is why it found nothing left to do here (`0 written, 1 already
+  written`). With `coarse` or `rigid`
   seeding, `seed` only prepares starting displacements and `run` does the
   solving.
 * **`finalize`** rebuilt the store's metadata, wrote `run/results.stat` and,
@@ -106,11 +107,15 @@ small) and point `output` and `workdir` somewhere new. `seed` then solves a
 
 ```text
 {'strategy': 'coarse', 'coarse_points': 27, 'coarse_good': 1.0, …}
-device 0: 1 tiles solved, 0 already written, 125 points, 0.01 GB read, compute 0.1 s, I/O wait 0.0 %, status counts {0: 125}, 0 errors
+device 0: 1 tiles solved, 1 written, 0 already written, 125 points, 0.01 GB read, compute 0.1 s, I/O wait 0.0 %, status counts {0: 125}, 0 errors
 ```
 
-Run `zvdvc run` a second time and it reports `0 tiles solved, 1 already
-written`: that is how an interrupted run resumes.
+Run `zvdvc run` a second time and it reports `0 tiles solved, 0 written,
+1 already written`: that is how an interrupted run resumes. Resume with the
+same config: `run` refuses one that differs from the planned one in
+anything that changes results. If tiles are still unwritten when `run`
+ends, it exits with status 3 and `finalize` refuses to run; run `zvdvc run`
+again.
 
 ## The same run from Python
 

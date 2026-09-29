@@ -45,14 +45,15 @@ CCPi's `strain` program never see a code they do not know.
 | 0 | `GOOD` | 0, point good | Gauss–Newton met a stopping rule (`obj_tol` or `disp_tol`) within `disp_max` of the seed, and every sample stayed in the brick's valid region. Also points that reached `max_iterations` when `search.report_convg_fail` is false (CCPi's behaviour). |
 | −1 | `RANGE_FAIL` | −1, range fail | The translation moved more than `disp_max` from the seed ($\lVert\mathbf{t} - \text{seed}\rVert_\infty > \texttt{disp\_max}$) after a step, or any sample's interpolation stencil left the brick's valid region: at the reference sampling, in a Gauss–Newton iteration, or at the final objective. The second case includes subvolumes that leave the image, which CCPi does not flag. |
 | −2 | `CONVG_FAIL` | −2, convergence fail | `max_iterations` steps were taken without meeting a stopping rule, and `search.report_convg_fail` is true (the default). CCPi's solver path never reports this code. |
-| −3 | `NOT_SEARCHED` | −3, not searched | Never attempted: beyond `num_points_to_process` in an in-memory solve, or pending. |
+| −3 | `NOT_SEARCHED` | −3, not searched | Never attempted: beyond `num_points_to_process` in an in-memory solve, or pending; also the points of unwritten cells exported by `zvdvc finalize --allow-partial`. |
 | −4 | `THRESH_FAIL` | none (CCPi skips the point) | `search.threshold` is set and the fraction of reference samples within `[gray_min, gray_max]` is below `min_fraction` (CCPi `subvol_thresh`). The point is not searched. |
-| −5 | `SINGULAR` | none | The normal equations are ill-conditioned: a non-positive diagonal of $\mathbf{H}$, or a Cholesky pivot of the Jacobi-scaled system at or below $10^{-6}$ (float32 engines; $10^{-10}$ for the float64 reference); or the target is featureless, $\sum\lVert\nabla g\rVert^2 \le 10^{-12}\sum g^2$. CCPi's QR solve has no such test. |
+| −5 | `SINGULAR` | none | The normal equations are ill-conditioned: a non-positive diagonal of $\mathbf{H}$, or a Cholesky pivot of the Jacobi-scaled system at or below $10^{-6}$ (float32 engines; $10^{-10}$ for the float64 reference); or the target is featureless, $\sum\lVert\nabla g\rVert^2 \le 10^{-12}\sum g^2$; or the reference subvolume has no texture, $\max f - \min f \le \tau\max\lvert f\rvert$ with $\tau = 10^{-5}$ (float32 engines; $10^{-12}$ for the float64 reference), tested before any iteration for every objective (zero padding, air), and likewise the final target samples; or the parameters or the final objective are not finite. CCPi's QR solve has no such test. |
 
 A point's status is set by the first failure met, in the order of the
 per-point pipeline ({doc}`method`): reference sampling, threshold test,
-Gauss–Newton iterations (range, singularity), iteration limit, final
-objective.
+reference texture test, Gauss–Newton iterations (range, singularity),
+iteration limit, finite parameters, final objective (range, target texture,
+finite value). No point with a non-finite result is `GOOD`.
 
 `PointStatus.to_ccpi()` maps a code to CCPi's range: codes $\ge -3$ are
 unchanged, codes $< -3$ become −3.
@@ -63,8 +64,8 @@ unchanged, codes $< -3$ become −3.
 |---|---|---|
 | results store `status` | `zvdvc seed` (wavefront), `zvdvc run` | zvDVC codes, unchanged |
 | `.npz` results | `zvdvc solve` | zvDVC codes, unchanged |
-| `.disp` | `zvdvc finalize --disp`, `zvdvc solve --disp` (`io.ccpi.write_disp`) | mapped with `to_ccpi()`: −4 and −5 become −3. Displacement and `objmin` are written as stored. |
-| `.stat` | `zvdvc finalize`, `zvdvc solve` (`io.ccpi.write_stat`) | one `status <NAME>\t<count>` line per status present, with zvDVC's names, **not** mapped (e.g. `status SINGULAR\t2`) |
+| `.disp` | `zvdvc finalize --disp`, `zvdvc solve --disp` (`io.ccpi.write_disp`) | mapped with `to_ccpi()`: −4 and −5 become −3. For every code other than 0 the displacement is written as 0, as CCPi writes failed points; a non-finite `objmin` is written as 0. The raw values stay in the store or `.npz`. |
+| `.stat` | `zvdvc finalize`, `zvdvc solve` (`io.ccpi.write_stat`) | one `status <NAME>\t<count>` line per status present, with zvDVC's names, **not** mapped (e.g. `status SINGULAR\t2`); then CCPi-style `number successful`, `range fail`, `convg fail` and `not searched` counts, mapped (−4 and −5 count as not searched) |
 | `<output_filename>.disp` | `zvdvc-dvc` / `zvdvc ccpi` drop-in | mapped with `to_ccpi()`. For every code other than 0 the displacement is written as `0.000000`, as CCPi writes failed points; a non-finite `objmin` is written as 0. |
 | `<output_filename>.stat` | drop-in | CCPi's three counts, after mapping: `number successful` (0), `number range fail` (−1), `number convg fail` (−2). Points mapped to −3 are in none of them. |
 | progress lines on stdout | drop-in | `Point_Good` (with objective and displacement), `Range_Fail`, `Convg_Fail`; any other mapped code prints `Not_Searched` |
@@ -76,7 +77,9 @@ CCPi's codes keep their values (0, −1, −2, −3), `SINGULAR.to_ccpi()` is
 reads back as −3 for both.
 
 ```{note}
-In a `.disp` exported by `zvdvc finalize --disp`, failed points keep the
-parameters they had when they failed. Always select `status == 0` before using
-displacements. Files written by the `zvdvc-dvc` drop-in zero them, as CCPi does.
+Every `.disp` writer (`zvdvc finalize --disp`, `zvdvc solve --disp`, the
+`zvdvc-dvc` drop-in) writes zero displacement for points that are not `GOOD`,
+as CCPi does. The results store and the `zvdvc solve` `.npz` keep the
+parameters a failed point had when it failed. Always select `status == 0`
+before using displacements.
 ```

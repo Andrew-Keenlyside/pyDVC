@@ -33,6 +33,25 @@ its layout:
 * a progress line per point on stdout (`i/N label  x y z  Point_Good  obj= … dx= …`), which
   iDVC's progress bar and time estimate read.
 
+Points that are not `GOOD` are written with zero displacement, as CCPi writes them. If a GPU
+engine runs out of memory for the two volumes, the solve falls back to the CPU engine with a
+warning.
+
+## When a run fails
+
+`zvdvc-dvc` checks every input before it touches any output: the `dvc_in` keys and values
+(validated as a zvDVC config is; unknown keys warn), the backend, the point cloud (not empty,
+finite coordinates, unique labels), both volumes (the file size must match the bit depth,
+dimensions and header length exactly), and that the output folder is writable. It writes the
+`.disp` and `.stat` to temporary files and renames them into place only when the run succeeds,
+the `.disp` last. A failure prints one line, `input file problem: …` or `run failed: …`, with
+no traceback, and exits 1.
+
+iDVC checks only whether `dvc` exited normally or crashed, not its exit code, so it detects a
+failed run by the missing `.disp`, as with CCPi (which exits 0 after input errors). A failed
+run writes no `.disp` or `.stat`, and leaves the files of an earlier run with the same
+`output_filename` as they were.
+
 Checked against CCPi on the same `dvc_in` (`tests/test_ccpi_dropin.py`, and case A): the same
 points, displacements within the two codes' sampling spread, and the `.stat` echo identical
 line for line apart from the output name and the version line.

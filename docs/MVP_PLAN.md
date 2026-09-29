@@ -1,5 +1,11 @@
 # MVP plan
 
+```{note}
+The status notes in this plan date from 2026-09-25. The current status, with
+what has been measured and what remains before a Go decision, is in the
+{doc}`MVP review <MVP_REVIEW>` (2026-09-29).
+```
+
 ## 1. What the MVP must answer
 
 The MVP is a **feasibility test**. It is done when these five questions have

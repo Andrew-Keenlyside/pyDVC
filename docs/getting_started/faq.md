@@ -57,13 +57,22 @@ Run the same `zvdvc run CONFIG` command again. It skips every tile whose
 results are already written and solves only the rest. A cell counts as
 written only when all its result arrays are, so a worker killed mid-write
 leaves nothing that looks finished. After a run, `run_stats.json` and
-`failed_tiles.json` in the work directory list any tiles still missing. This
+`failed_tiles.json` in the work directory list any tiles still missing, and
+`zvdvc run` exits with status 3 when there are any; `zvdvc finalize` refuses
+until they are written (or `--allow-partial` exports them as
+`NOT_SEARCHED`). This
 has been tested by killing one of two workers with `kill -9`: the resubmitted
 job solved only the 4 missing tiles and wrote a bit-identical store.
 
-Every other stage is also safe to re-run. `zvdvc plan` refuses to reuse a
-results store written with a different template, DOF, chunk grid or
-prefilter, so a resumed run cannot mix settings.
+Every other stage is also safe to re-run. The results store and `plan.json`
+record a fingerprint of the run: the settings that change results, the
+volumes (resolved path, shape, dtype, and file size and modification time, or
+a digest of the Zarr metadata) and the points. `zvdvc plan`, `seed` and `run`
+refuse to add results made with anything else, so a resumed run cannot mix
+settings or inputs. Moving or copying the volumes, or running from another
+directory with relative paths, therefore also refuses a resume: plan again
+with a new `output` and `workdir`. A store written before fingerprints were
+recorded gives a warning instead ({doc}`/spec/results_store`).
 
 ### How big can the data be?
 
@@ -119,9 +128,10 @@ comparison tools report such points separately.
 
 ### Can I view zvDVC's results in iDVC?
 
-Yes. `zvdvc finalize CONFIG --disp` writes `results.disp` and `results.stat`
-in CCPi's layout into the work directory; iDVC's results viewer reads the same
-values from them as from CCPi's. If you run iDVC with the `zvdvc-dvc` drop-in,
+Yes. `zvdvc finalize CONFIG --disp` writes `results.disp` in CCPi's layout
+into the work directory (points that are not `GOOD` get zero displacement,
+as in CCPi), with a zvDVC `results.stat` summary; iDVC's results viewer reads
+the same values from the `.disp` as from CCPi's. If you run iDVC with the `zvdvc-dvc` drop-in,
 iDVC finds the files where it expects them ({doc}`/IDVC`). CCPi's `strain`
 program reads zvDVC's `.disp` unchanged, and `zvdvc strain` computes the same
 strain with an uncertainty per point.
@@ -153,7 +163,9 @@ half the device memory and half the host-to-device copy, and u8 rows can be
 read as packed 32-bit words. Converting up front would buy no accuracy: in the
 error-floor study, a prefiltered u8 volume rounded back to u8 was as good as
 float32 (the same maximum bias and sampling uncertainty). `cluster.brick_dtype`
-exists in the configuration, but only `native` is used today.
+exists in the configuration, but only `native` is used today; another value
+warns. Big-endian data is converted to the host's byte order as bricks are
+read.
 
 ### Does zvDVC use GPUDirect Storage?
 

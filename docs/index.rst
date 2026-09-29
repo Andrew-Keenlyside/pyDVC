@@ -113,6 +113,7 @@ Where to start
    :caption: Design Notes
    :hidden:
 
+   MVP_REVIEW
    ARCHITECTURE
    PERFORMANCE
    MVP_PLAN
